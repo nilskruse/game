@@ -1,0 +1,9 @@
+[package]
+name = "game"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "*"
+bevy_rapier2d = "*"
+bevy_ecs_tilemap = "*"
