@@ -1,6 +1,6 @@
-use crate::Character;
+use crate::{health::Health, Character};
+use avian2d::prelude::*;
 use bevy::prelude::*;
-use bevy_rapier2d::prelude::*;
 
 #[derive(Hash, Eq, PartialEq, Default, Copy, Clone, Debug)]
 pub enum ActionType {
@@ -57,7 +57,6 @@ pub fn finish_actions(
             match character.current_action.action_type {
                 ActionType::None => (),
                 ActionType::Attack => handle_attack(
-                    &character,
                     character.current_action.direction,
                     char_transform,
                     char_collider,
@@ -71,7 +70,6 @@ pub fn finish_actions(
 }
 
 pub fn handle_attack(
-    character: &Character,
     direction: ActionDirection,
     char_transform: &Transform,
     char_collider: &Collider,
@@ -80,60 +78,85 @@ pub fn handle_attack(
     let height = 100.;
     let width = 50.;
     let collider = match direction {
-        ActionDirection::Right | ActionDirection::Left => Collider::cuboid(width, height),
-        ActionDirection::Up | ActionDirection::Down => Collider::cuboid(height, width),
+        ActionDirection::Right | ActionDirection::Left => Collider::rectangle(width, height),
+        ActionDirection::Up | ActionDirection::Down => Collider::rectangle(height, width),
     };
 
-    let collider_cuboid = collider.as_cuboid().expect("this should be an cuboid");
-    let char_cuboid = char_collider.as_cuboid().expect("this should be an cuboid");
+    let collider_cuboid = collider
+        .shape()
+        .as_cuboid()
+        .expect("this should be an cuboid");
+    let char_cuboid = char_collider
+        .shape()
+        .as_cuboid()
+        .expect("this should be an cuboid");
     let (x, y) = match direction {
         ActionDirection::Right => (
             char_transform.translation.x
-                + char_cuboid.half_extents().x
-                + collider_cuboid.half_extents().x,
+                + char_cuboid.half_extents.x
+                + collider_cuboid.half_extents.x,
             char_transform.translation.y,
         ),
         ActionDirection::Left => (
             char_transform.translation.x
-                - char_cuboid.half_extents().x
-                - collider_cuboid.half_extents().x,
+                - char_cuboid.half_extents.x
+                - collider_cuboid.half_extents.x,
             char_transform.translation.y,
         ),
         ActionDirection::Up => (
             char_transform.translation.x,
             char_transform.translation.y
-                + char_cuboid.half_extents().y
-                + collider_cuboid.half_extents().y,
+                + char_cuboid.half_extents.y
+                + collider_cuboid.half_extents.y,
         ),
         ActionDirection::Down => (
             char_transform.translation.x,
             char_transform.translation.y
-                - char_cuboid.half_extents().y
-                - collider_cuboid.half_extents().y,
+                - char_cuboid.half_extents.y
+                - collider_cuboid.half_extents.y,
         ),
     };
 
-    commands
-        .spawn((
-            DamageArea {},
-            collider,
-            Transform::from_xyz(x, y, 0.),
-            RigidBody::Dynamic,
-            GravityScale(0.0)
-        ))
-        .insert(ActiveEvents::COLLISION_EVENTS);
+    commands.spawn((
+        DamageArea { damage: 40. },
+        collider,
+        Transform::from_xyz(x, y, 0.),
+        RigidBody::Static,
+        CollidingEntities::default(),
+    ));
 }
 
 #[derive(Component)]
-// #[require(Sensor)]
-pub struct DamageArea {}
+#[require(Sensor)]
+pub struct DamageArea {
+    damage: f32,
+}
 
-pub fn process_damage_area(query: Query<&CollidingEntities>) {
-    // pub fn process_damage_area(query: Query<(&Collider, &Transform)>) {
-    // for (collider, colliding_entities) in query.iter() {
-    for colliding_entities in query.iter() {
-        for e in colliding_entities.iter() {
-            println!("e: {e:?}");
+pub fn process_damage_area(
+    mut commands: Commands,
+    query: Query<(Entity, &DamageArea, &CollidingEntities)>,
+    mut query2: Query<(Entity, &mut Health)>,
+) {
+    // for collision_event in collision_events.read() {
+    //     println!("Received collision event 2: {:?}", collision_event);
+    // }
+    for (area_entity, area, colliding_entities) in query.iter() {
+        println!(
+            "{} is colliding with the following entities: {:?}",
+            area_entity, colliding_entities,
+        );
+
+        for hit_entity in colliding_entities.iter() {
+            if let Ok((entity, mut health)) = query2.get_mut(*hit_entity) {
+                println!("damaged");
+
+                health.current -= area.damage;
+
+                if health.current < 0. {
+                    commands.entity(entity).despawn();
+                }
+            }
         }
+        commands.entity(area_entity).despawn();
     }
 }

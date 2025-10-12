@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::action::{ActionContainer, ActionDirection, ActionType};
+use crate::action::{ActionContainer, ActionDirection};
 
 #[derive(Component, Default)]
 pub struct Character {

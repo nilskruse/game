@@ -1,8 +1,9 @@
 use crate::{
-    action::{ActionContainer, ActionDirection, ActionState, ActionType},
+    action::{ActionDirection, ActionState, ActionType},
     character::Character,
-    movement::{Movement, Velocity},
+    movement::Movement,
 };
+use avian2d::prelude::LinearVelocity;
 use bevy::prelude::*;
 use std::{cmp::Ordering, collections::HashMap};
 
@@ -72,7 +73,8 @@ pub struct Direction {
 
 #[derive(Component)]
 #[require(Sprite, Direction)]
-pub struct AnimatedCharacter {
+#[derive(Default)]
+pub struct Animated {
     pub state: Movement,
     pub prev_state: Movement,
     pub animations: Animations,
@@ -81,20 +83,7 @@ pub struct AnimatedCharacter {
     pub prev_animation: &'static str,
 }
 
-impl Default for AnimatedCharacter {
-    fn default() -> Self {
-        Self {
-            state: Default::default(),
-            prev_state: Default::default(),
-            animations: Default::default(),
-            timer: Default::default(),
-            animation: Default::default(),
-            prev_animation: Default::default(),
-        }
-    }
-}
-
-pub fn set_animation_direction(mut query: Query<(&Velocity, &mut Direction)>) {
+pub fn set_animation_direction(mut query: Query<(&LinearVelocity, &mut Direction)>) {
     for (velocity, mut direction) in &mut query {
         direction.h = match velocity.0.x.total_cmp(&0.0) {
             Ordering::Less => HorizontalDirection::Left,
@@ -110,7 +99,7 @@ pub fn set_animation_direction(mut query: Query<(&Velocity, &mut Direction)>) {
     }
 }
 
-pub fn set_animation_type(mut query: Query<(&mut AnimatedCharacter, &Character, &Velocity)>) {
+pub fn set_animation_type(mut query: Query<(&mut Animated, &Character, &LinearVelocity)>) {
     for (mut animated_character, character, velocity) in &mut query {
         if character.current_action.action_type == ActionType::None {
             if velocity.length() > 0. {
@@ -122,7 +111,7 @@ pub fn set_animation_type(mut query: Query<(&mut AnimatedCharacter, &Character, 
     }
 }
 
-pub fn set_animation_key(mut query: Query<(&Character, &mut AnimatedCharacter, &Direction)>) {
+pub fn set_animation_key(mut query: Query<(&Character, &mut Animated, &Direction)>) {
     for (character, mut animated_character, direction) in &mut query {
         animated_character.animation = match character.current_action.action_type {
             ActionType::None => match (animated_character.state, direction.v, direction.h) {
@@ -143,7 +132,7 @@ pub fn set_animation_key(mut query: Query<(&Character, &mut AnimatedCharacter, &
 
 pub fn animate_sprite(
     time: Res<Time>,
-    mut query: Query<(&mut Character, &mut AnimatedCharacter, &mut Sprite)>,
+    mut query: Query<(&mut Character, &mut Animated, &mut Sprite)>,
 ) {
     for (mut character, mut animated_character, mut sprite) in &mut query {
         animated_character.timer.tick(time.delta());

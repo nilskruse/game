@@ -1,10 +1,9 @@
+use avian2d::prelude::*;
 use bevy::prelude::*;
-use bevy_rapier2d::prelude::*;
 
 use crate::{
-    animation::{AnimatedCharacter, Animations},
+    animation::{Animated, Animations},
     character::Character,
-    movement::{self, AccumulatedInput},
 };
 
 #[derive(Component)]
@@ -35,26 +34,23 @@ pub fn spawn_player(
     ]);
 
     commands.spawn(Camera2d);
-    commands
-        .spawn((
-            Player,
-            AnimatedCharacter {
-                animations,
-                ..Default::default()
+    commands.spawn((
+        Player,
+        Animated {
+            animations,
+            ..Default::default()
+        },
+        RigidBody::Dynamic,
+        LockedAxes::ROTATION_LOCKED,
+        Collider::rectangle(25., 25.),
+        Transform::from_xyz(100., 0., 1.),
+        Sprite::from_atlas_image(
+            texture,
+            TextureAtlas {
+                layout: texture_atlas_layout,
+                index: 0,
             },
-            RigidBody::KinematicPositionBased,
-            Collider::cuboid(25., 25.),
-            Transform::from_xyz(100., 0., 1.),
-            AccumulatedInput::default(),
-            movement::Velocity::default(),
-            Sprite::from_atlas_image(
-                texture,
-                TextureAtlas {
-                    layout: texture_atlas_layout,
-                    index: 0,
-                },
-            ),
-            ActiveEvents::COLLISION_EVENTS,
-        ))
-        .insert(KinematicCharacterController::default());
+        ),
+        CollisionEventsEnabled,
+    )); // .insert(KinematicCharacterController::default());
 }
