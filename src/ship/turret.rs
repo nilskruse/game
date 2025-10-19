@@ -4,7 +4,7 @@ use bevy::{
     prelude::*,
 };
 
-use crate::{enemy::Enemy, ship::bullet};
+use crate::{faction::InFaction, ship::bullet};
 
 #[derive(Component)]
 #[require(Transform)]
@@ -53,21 +53,23 @@ pub fn spawn_turret(
 
 pub fn select_target(
     mut commands: Commands,
-    turret_query: Query<Entity, (With<Turret>, Without<Target>)>,
-    enemy_query: Query<Entity, With<Enemy>>,
+    turret_query: Query<(Entity, &InFaction), (With<Turret>, Without<Target>)>,
+    target_query: Query<(Entity, &InFaction)>,
 ) {
-    for turret in turret_query.iter() {
-        for enemy_entity in enemy_query.iter() {
-            info!("select target");
-            commands.entity(turret).insert(Target(enemy_entity));
-            break;
+    for (turret_entity, turret_faction) in turret_query.iter() {
+        for (target_entity, target_faction) in target_query.iter() {
+            if turret_faction != target_faction {
+                info!("select target");
+                commands.entity(turret_entity).insert(Target(target_entity));
+                break;
+            }
         }
     }
 }
 
 pub fn rotate_turret(
     mut turret_query: Query<(&Target, &Turret, &mut Transform, &GlobalTransform)>,
-    enemy_query: Query<&GlobalTransform, With<Enemy>>,
+    enemy_query: Query<&GlobalTransform>,
 ) {
     for (target, _turret, mut turret_transform, turret_global_transform) in turret_query.iter_mut()
     {

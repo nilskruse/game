@@ -1,7 +1,9 @@
 pub mod action;
 pub mod animation;
+pub mod camera;
 pub mod character;
 pub mod enemy;
+pub mod faction;
 pub mod health;
 pub mod movement;
 pub mod player;
@@ -10,14 +12,24 @@ pub mod world;
 
 use action::{finish_actions, process_damage_area, start_actions};
 use animation::{animate_sprite, set_animation_direction, set_animation_key, set_animation_type};
-use avian2d::prelude::*;
-use bevy::prelude::*;
+use avian2d::{
+    dynamics::{
+        ccd::SweptCcdSystems,
+        integrator::IntegrationSystems,
+        solver::{schedule::SubstepSolverSystems, xpbd::XpbdSolverSystems},
+    },
+    physics_transform::PhysicsTransformSystems,
+    prelude::*,
+};
+use bevy::{app::HierarchyPropagatePlugin, prelude::*};
 use character::Character;
 use movement::handle_input;
 // use player::spawn_player;
 
 use crate::{
-    enemy::spawn_enemy,
+    camera::{move_camera, spawn_camera},
+    enemy::{spawn_enemy, spawn_enemy_ship},
+    faction::InFaction,
     movement::apply_movement_damping,
     ship::turret::{fire_turret, rotate_turret, select_target},
 };
@@ -25,9 +37,11 @@ use crate::{
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(HierarchyPropagatePlugin::<InFaction>::new(PostUpdate))
         .add_plugins(PhysicsPlugins::default())
-        .add_plugins(PhysicsDebugPlugin::default())
+        .add_plugins(PhysicsDebugPlugin)
         .insert_resource(Gravity(Vec2::ZERO))
+        .insert_resource(SubstepCount(1))
         .add_plugins(Game)
         .run();
 }
@@ -55,12 +69,51 @@ impl Plugin for Game {
         // app.add_systems(Startup, spawn_player);
         app.add_systems(Startup, spawn_obstacle);
         app.add_systems(Startup, spawn_enemy);
-        app.add_systems(Startup, ship::spawn_player_ship);
+        app.add_systems(Startup, spawn_enemy_ship);
+        app.add_systems(Startup, spawn_camera);
+        app.add_systems(
+            Startup,
+            (ship::spawn_player_ship, player::spawn_player).chain(),
+        );
         app.add_systems(FixedUpdate, (animate_sprite, finish_actions).chain());
         app.add_systems(FixedUpdate, process_damage_area);
         app.add_systems(FixedUpdate, select_target);
         app.add_systems(FixedUpdate, rotate_turret);
+        // app.add_systems(
+        //     FixedPostUpdate,
+        //     (player::handle_input, player::sync_with_ship)
+        //         .chain()
+        //         .before(PhysicsTransformSystems::Propagate),
+        // );
+        // app.add_systems(
+        //     FixedPostUpdate,
+        //     player::sync_after.after(PhysicsTransformSystems::PositionToTransform),
+        // );
+        // app.add_systems(
+        //     FixedPostUpdate,
+        //     player::sync_with_ship.before(SolverSystems::Substep),
+        // );
+        app.add_systems(
+            SubstepSchedule,
+            player::handle_input_2
+                // .before(SubstepSolverSystems::WarmStart)
+                // .in_set(SubstepSolverSystems::WarmStart)
+                // .before(SweptCcdSystems)
+                // .before(SolverSystems::Restitution)
+                // .after(SolverSystems::PrepareSolverBodies)
+                .before(SubstepSolverSystems::WarmStart)
+                .after(IntegrationSystems::Velocity)
+                .before(IntegrationSystems::Position),
+        );
+        app.add_systems(
+            SubstepSchedule,
+            (player::sync_with_ship)
+                .chain()
+                .after(SubstepSolverSystems::SolveConstraints)
+                .before(IntegrationSystems::Position), // .after(XpbdSolverSystems::VelocityProjection),
+        );
         app.add_systems(Update, fire_turret);
+        app.add_systems(Update, move_camera);
         app.add_systems(
             RunFixedMainLoop,
             ((

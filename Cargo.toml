@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bevy = "*"
+avian2d = "*"
 # bevy_rapier2d = "*"
-avian2d = { git = "https://github.com/Jondolf/avian", branch = "main" } 
+# avian2d = { git = "https://github.com/Jondolf/avian", branch = "main" } 
 # bevy_ecs_tilemap = "*"

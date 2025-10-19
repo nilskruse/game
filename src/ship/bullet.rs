@@ -38,7 +38,7 @@ fn on_bullet_hit(
     target_query: Query<(), With<Health>>,
     bullet_query: Query<&Bullet>,
 ) {
-    info!("bullet hit: {:?}", event);
+    // info!("bullet hit: {:?}", event);
 
     if target_query.contains(event.collider2) {
         info!("bullet hit something with health");
