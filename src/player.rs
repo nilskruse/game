@@ -17,6 +17,10 @@ pub struct OnShip {
     relative_transform: Transform,
 }
 
+/// Desired walking direction in the ship's local frame, set from input.
+#[derive(Component, Default)]
+pub struct MoveInput(pub Vec2);
+
 pub fn spawn_player(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -49,11 +53,12 @@ pub fn spawn_player(
                 animations,
                 ..Default::default()
             },
-            RigidBody::Kinematic,
-            LockedAxes::ROTATION_LOCKED,
-            // LockedAxes::ALL_LOCKED,
+            RigidBody::Dynamic,
+            // Player is far lighter than the ship: let the ship treat it as
+            // negligible so walking into a wall never shoves the ship.
+            Dominance(-1),
+            MoveInput::default(),
             Collider::rectangle(25., 25.),
-            // Dominance(-1),
             // Friction {
             //     dynamic_coefficient: 0.,
             //     static_coefficient: 0.,
@@ -86,6 +91,95 @@ pub fn spawn_player(
         .id();
 
     // let joint = commands.spawn((FixedJoint::new(ship_entity, player_entity)));
+}
+
+/// Read keyboard into the player's local-frame walk direction.
+pub fn read_player_input(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut query: Query<&mut MoveInput, With<Player>>,
+) {
+    for mut input in query.iter_mut() {
+        let mut v = Vec2::ZERO;
+        if keyboard_input.pressed(KeyCode::ArrowUp) {
+            v.y += 1.0;
+        }
+        if keyboard_input.pressed(KeyCode::ArrowDown) {
+            v.y -= 1.0;
+        }
+        if keyboard_input.pressed(KeyCode::ArrowLeft) {
+            v.x -= 1.0;
+        }
+        if keyboard_input.pressed(KeyCode::ArrowRight) {
+            v.x += 1.0;
+        }
+        input.0 = v;
+    }
+}
+
+/// Drive the player as a dynamic body riding the ship: its velocity is the
+/// velocity of the ship point beneath it (so it's carried + spun along) plus
+/// its own walk input rotated into the ship's frame. Runs before the physics
+/// step so the solver resolves wall collisions instead of us teleporting
+/// through them.
+pub fn drive_player_on_ship(
+    time: Res<Time>,
+    mut query: Query<
+        (
+            &Position,
+            &MoveInput,
+            &mut LinearVelocity,
+            &mut AngularVelocity,
+            &OnShip,
+        ),
+        Without<ShipBase>,
+    >,
+    ship: Query<
+        (
+            &Position,
+            &Rotation,
+            &LinearVelocity,
+            &AngularVelocity,
+            &ComputedCenterOfMass,
+        ),
+        With<ShipBase>,
+    >,
+) {
+    const SPEED: f32 = 210.0;
+    let dt = time.delta_secs();
+    for (player_pos, input, mut player_vel, mut player_ang, on_ship) in query.iter_mut() {
+        let Ok((ship_pos, ship_rot, ship_vel, ship_ang, ship_com_local)) =
+            ship.get(on_ship.ship_entity)
+        else {
+            continue;
+        };
+
+        // The ship rotates about its center of mass, not its `Position` origin
+        // (its walls are uneven, so the COM is offset). Pivot around the global
+        // COM and treat `LinearVelocity` as that COM's velocity.
+        let ship_com = ship_pos.0 + ship_rot * ship_com_local.0;
+
+        // Velocity that keeps the player locked to the ship point under it.
+        // Using the *finite* rotation over this tick (not the linear tangent
+        // `omega x r`) lands the player exactly on the swept arc each step, so
+        // there's no rotational drift across the deck.
+        let r = player_pos.0 - ship_com;
+        let carry = if dt > 0.0 {
+            let delta_angle = ship_ang.0 * dt;
+            let (s, c) = delta_angle.sin_cos();
+            let rotated_r = Vec2::new(c * r.x - s * r.y, s * r.x + c * r.y);
+            ship_vel.0 + (rotated_r - r) / dt
+        } else {
+            ship_vel.0
+        };
+
+        // Player's own walking, expressed in the ship's rotated frame.
+        let walk = ship_rot * (input.0.normalize_or_zero() * SPEED);
+
+        player_vel.0 = carry + walk;
+        // Spin the player's own body with the ship so it stays oriented to the
+        // deck instead of keeping a fixed world-facing.
+        player_ang.0 = ship_ang.0;
+    }
 }
 
 //

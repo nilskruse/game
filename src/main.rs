@@ -31,7 +31,7 @@ use crate::{
     enemy::{spawn_enemy, spawn_enemy_ship},
     faction::InFaction,
     movement::apply_movement_damping,
-    player::{sync_with_ship_via_position, sync_with_ship_via_transform},
+    player::{drive_player_on_ship, read_player_input},
     ship::turret::{fire_turret, rotate_turret, select_target},
 };
 
@@ -104,13 +104,9 @@ impl Plugin for Game {
         //     FixedPostUpdate,
         //     player::sync_with_ship.before(SolverSystems::Substep),
         // );
-        app.add_systems(
-            FixedPostUpdate,
-            (sync_with_ship_via_position)
-                .before(PhysicsSystems::Writeback)
-                .after(PhysicsSystems::StepSimulation),
-        );
-        app.add_systems(PreUpdate, (player::handle_input_transform).chain());
+        // Set the player's velocity each tick *before* the physics step, so the
+        // solver carries it with the ship and blocks it on the walls.
+        app.add_systems(FixedUpdate, (read_player_input, drive_player_on_ship).chain());
         // app.add_systems(FixedPostUpdate, ( sync_with_ship_via_transform).chain().in_set(PhysicsTransformSystems::PositionToTransform));
         // app.add_systems(FixedPostUpdate, (player::handle_input_transform, sync_with_ship_via_transform).chain());
         // app.add_systems(
