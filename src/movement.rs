@@ -12,7 +12,7 @@ pub enum Movement {
     Moving,
 }
 
-pub fn handle_input(
+pub fn handle_input_ship(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&mut LinearVelocity, &mut AngularVelocity, &Transform), With<PlayerShip>>,
 ) {
