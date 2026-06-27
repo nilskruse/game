@@ -42,11 +42,14 @@ fn main() {
         .add_plugins(PhysicsPlugins::default())
         .add_plugins(PhysicsDebugPlugin)
         .insert_resource(Gravity(Vec2::ZERO))
-        .insert_resource(SolverConfig {
-            max_overlap_solve_speed: 1000000000000000.,
-            contact_damping_ratio: 0.,
-            ..Default::default()
-        })
+        // Default SolverConfig. The previous override (contact_damping_ratio: 0,
+        // max_overlap_solve_speed: 1e15) made contacts an undamped spring with
+        // infinite pushout, which oscillated the player into moving walls.
+        // .insert_resource(SolverConfig {
+        //     max_overlap_solve_speed: 1000000000000000.,
+        //     contact_damping_ratio: 0.,
+        //     ..Default::default()
+        // })
         // .insert_resource(NarrowPhaseConfig {
         //     match_contacts: false,
         //     ..Default::default()

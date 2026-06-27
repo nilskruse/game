@@ -54,6 +54,9 @@ pub fn spawn_player(
                 ..Default::default()
             },
             RigidBody::Dynamic,
+            // The player's facing is slaved to the ship (see drive_player_on_ship),
+            // so lock rotation to stop wall-contact torque from tilting it.
+            LockedAxes::ROTATION_LOCKED,
             // Player is far lighter than the ship: let the ship treat it as
             // negligible so walking into a wall never shoves the ship.
             Dominance(-1),
@@ -123,12 +126,14 @@ pub fn read_player_input(
 /// through them.
 pub fn drive_player_on_ship(
     time: Res<Time>,
+    collisions: Collisions,
     mut query: Query<
         (
+            Entity,
             &Position,
+            &mut Rotation,
             &MoveInput,
             &mut LinearVelocity,
-            &mut AngularVelocity,
             &OnShip,
         ),
         Without<ShipBase>,
@@ -146,7 +151,9 @@ pub fn drive_player_on_ship(
 ) {
     const SPEED: f32 = 210.0;
     let dt = time.delta_secs();
-    for (player_pos, input, mut player_vel, mut player_ang, on_ship) in query.iter_mut() {
+    for (player_entity, player_pos, mut player_rot, input, mut player_vel, on_ship) in
+        query.iter_mut()
+    {
         let Ok((ship_pos, ship_rot, ship_vel, ship_ang, ship_com_local)) =
             ship.get(on_ship.ship_entity)
         else {
@@ -173,12 +180,36 @@ pub fn drive_player_on_ship(
         };
 
         // Player's own walking, expressed in the ship's rotated frame.
-        let walk = ship_rot * (input.0.normalize_or_zero() * SPEED);
+        let mut walk = ship_rot * (input.0.normalize_or_zero() * SPEED);
+
+        // Strip out any part of `walk` that points into a wall we're already
+        // touching. Commanding velocity into a wall forces a sliver of
+        // penetration that the solver pushes back out along the *rotated*
+        // normal, leaving a tangential residue that slides the player along the
+        // wall while turning. Removing the into-wall component avoids that
+        // entirely; the carry term still handles riding the wall.
+        for contact in collisions.collisions_with(player_entity) {
+            for manifold in &contact.manifolds {
+                // `normal` points from collider1 to collider2 in world space;
+                // orient it to point out of the wall, toward the player.
+                let out_of_wall = if contact.collider1 == player_entity {
+                    -manifold.normal
+                } else {
+                    manifold.normal
+                };
+                let into_wall = walk.dot(out_of_wall);
+                if into_wall < 0.0 {
+                    walk -= into_wall * out_of_wall;
+                }
+            }
+        }
 
         player_vel.0 = carry + walk;
-        // Spin the player's own body with the ship so it stays oriented to the
-        // deck instead of keeping a fixed world-facing.
-        player_ang.0 = ship_ang.0;
+        // Slave the player's facing directly to the ship's orientation, predicted
+        // one step ahead so it stays lag-free. Rotation is locked, so this can't
+        // be perturbed by contact torque (which previously tilted the player and
+        // made it skitter along walls).
+        *player_rot = Rotation::radians(ship_ang.0 * dt) * *ship_rot;
     }
 }
 
