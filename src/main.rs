@@ -2,12 +2,15 @@ pub mod action;
 pub mod animation;
 pub mod camera;
 pub mod character;
+pub mod docking;
 pub mod enemy;
 pub mod faction;
 pub mod health;
+pub mod interaction;
 pub mod movement;
 pub mod player;
 pub mod ship;
+pub mod station;
 pub mod world;
 
 use action::{finish_actions, process_damage_area, start_actions};
@@ -31,8 +34,11 @@ use crate::{
     enemy::{spawn_enemy, spawn_enemy_ship},
     faction::InFaction,
     movement::apply_movement_damping,
+    docking::toggle_dock,
+    interaction::interact,
     player::{correct_player_carry, drive_player_on_ship, read_player_input, toggle_seat},
     ship::turret::{fire_turret, rotate_turret, select_target},
+    world::WorldPlugin,
 };
 
 fn main() {
@@ -56,6 +62,7 @@ fn main() {
         // })
         // .insert_resource(SubstepCount(12))
         .add_plugins(Game)
+        .add_plugins(WorldPlugin)
         .run();
 }
 
@@ -111,7 +118,7 @@ impl Plugin for Game {
         // solver carries it with the ship and blocks it on the walls.
         // `just_pressed` must be polled at frame rate; in FixedUpdate (which can
         // tick zero or many times per frame) the press edge gets missed.
-        app.add_systems(Update, toggle_seat);
+        app.add_systems(Update, (toggle_seat, toggle_dock, interact));
         app.add_systems(FixedUpdate, (read_player_input, drive_player_on_ship).chain());
         // After the solve but before transform writeback, fix the player up
         // against the ship's *actual* motion this step.

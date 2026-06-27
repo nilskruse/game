@@ -70,6 +70,17 @@ pub fn spawn_player_ship(
         &mut meshes,
         &mut materials,
     );
+
+    // A docking port on the ship's left side (-X), facing outward. Rotating the
+    // port's local +Y by 90° points its facing toward -X.
+    let _dock = crate::docking::spawn_docking_port(
+        ship_base,
+        Vec2::new(-55., 0.),
+        std::f32::consts::FRAC_PI_2,
+        commands.reborrow(),
+        &mut meshes,
+        &mut materials,
+    );
 }
 
 #[derive(PhysicsLayer, Default)]
@@ -124,16 +135,24 @@ pub fn spawn_player_ship_base(
         ))
     };
 
+    // Left wall, split into two segments to leave a doorway (centered at y = 0)
+    // for the docking port, so the player can walk out toward a docked structure.
     let _left_wall = {
-        let rect = Rectangle::new(thickness, rectangle.size().y);
-        commands.spawn((
-            ChildOf(ship_base),
-            Collider::from(rect),
-            Transform::from_xyz(-rectangle.half_size.x + thickness / 2., 0., 0.),
-            Mesh2d(meshes.add(rect)),
-            MeshMaterial2d(materials.add(Color::srgb(1., 0., 0.))),
-            collision_layers,
-        ))
+        let door_half = 20.;
+        let seg_height = rectangle.half_size.y - door_half;
+        let seg_center = door_half + seg_height / 2.;
+        let x = -rectangle.half_size.x + thickness / 2.;
+        let rect = Rectangle::new(thickness, seg_height);
+        for sy in [-1.0_f32, 1.0] {
+            commands.spawn((
+                ChildOf(ship_base),
+                Collider::from(rect),
+                Transform::from_xyz(x, sy * seg_center, 0.),
+                Mesh2d(meshes.add(rect)),
+                MeshMaterial2d(materials.add(Color::srgb(1., 0., 0.))),
+                collision_layers,
+            ));
+        }
     };
 
     let _right_wall = {

@@ -3,7 +3,7 @@ use core::f32;
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
-use crate::{player::Seated, ship::PlayerShip};
+use crate::{docking::Docked, player::Seated, ship::PlayerShip};
 
 #[derive(Hash, Eq, PartialEq, Default, Copy, Clone, Debug)]
 pub enum Movement {
@@ -15,14 +15,30 @@ pub enum Movement {
 pub fn handle_input_ship(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<
-        (Entity, &mut LinearVelocity, &mut AngularVelocity, &Transform),
+        (
+            Entity,
+            &mut LinearVelocity,
+            &mut AngularVelocity,
+            &Transform,
+            Has<Docked>,
+        ),
         With<PlayerShip>,
     >,
     pilots: Query<&Seated>,
 ) {
     const SPEED: f32 = 210.0;
     const ROTATION_SPEED: f32 = 5.;
-    for (ship_entity, mut linear_velocity, mut angular_velocity, transform) in query.iter_mut() {
+    for (ship_entity, mut linear_velocity, mut angular_velocity, transform, docked) in
+        query.iter_mut()
+    {
+        // While docked the ship is locked in place: ignore steering and hold
+        // still (the structure we're latched to is static).
+        if docked {
+            linear_velocity.0 = Vec2::ZERO;
+            angular_velocity.0 = 0.0;
+            continue;
+        }
+
         // The ship only responds to steering input while a player is seated at
         // one of its pilot seats. Otherwise it just coasts (damping slows it).
         let piloted = pilots.iter().any(|seated| seated.ship == ship_entity);
@@ -33,6 +49,7 @@ pub fn handle_input_ship(
 
         let mut rotation_factor = 0.0;
         let mut movement_factor = 0.0;
+        let mut strafe_factor = 0.0;
 
         if keyboard_input.pressed(KeyCode::KeyA) {
             rotation_factor += 1.0;
@@ -46,19 +63,25 @@ pub fn handle_input_ship(
             movement_factor += 1.0;
         }
 
+        // Strafe sideways with the left/right arrows (relative to the ship's
+        // facing): right arrow = thrust right, left arrow = thrust left.
+        if keyboard_input.pressed(KeyCode::ArrowRight) {
+            strafe_factor += 1.0;
+        }
+        if keyboard_input.pressed(KeyCode::ArrowLeft) {
+            strafe_factor -= 1.0;
+        }
+
         // Update the ship rotation around the Z axis (perpendicular to the 2D plane of the screen)
         angular_velocity.0 = rotation_factor * ROTATION_SPEED;
 
-        // Get the ship's forward vector by applying the current rotation to the ships initial facing
-        // vector
-        let movement_direction = transform.rotation * Vec3::Y;
-        // Get the distance the ship will move based on direction, the ship's movement speed and delta
-        // time
-        let movement_distance = movement_factor * SPEED;
-        // Create the change in translation using the new movement direction and distance
-        let translation_delta = movement_direction * movement_distance;
+        // Ship-relative forward (Y) and right (X) vectors.
+        let forward = transform.rotation * Vec3::Y;
+        let right = transform.rotation * Vec3::X;
+        // Combine forward thrust and sideways strafe into the velocity.
+        let velocity = forward * (movement_factor * SPEED) + right * (strafe_factor * SPEED);
 
-        linear_velocity.0 = translation_delta.xy();
+        linear_velocity.0 = velocity.xy();
     }
 }
 

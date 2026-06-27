@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = "*"
-avian2d = "*"
-bevy_transform_interpolation = "0.4.0"
+bevy = "0.19"
+avian2d = "0.7"
+bevy_transform_interpolation = "0.5"
 # bevy_rapier2d = "*"
 # avian2d = { git = "https://github.com/Jondolf/avian", branch = "main" } 
 # bevy_ecs_tilemap = "*"
