@@ -173,6 +173,7 @@ pub fn drive_player_on_ship(
         (
             Entity,
             &Position,
+            &mut Rotation,
             &MoveInput,
             &mut LinearVelocity,
             &mut CarryState,
@@ -193,7 +194,7 @@ pub fn drive_player_on_ship(
 ) {
     const SPEED: f32 = 210.0;
     let dt = time.delta_secs();
-    for (player_entity, player_pos, input, mut player_vel, mut carry_state, on_ship) in
+    for (player_entity, player_pos, mut player_rot, input, mut player_vel, mut carry_state, on_ship) in
         query.iter_mut()
     {
         let Ok((ship_pos, ship_rot, ship_lin, ship_ang_vel, ship_com_local)) =
@@ -203,9 +204,11 @@ pub fn drive_player_on_ship(
         };
 
         // Carry with the ship's *commanded* velocity (set this tick) so there's
-        // zero lag. This is only a prediction: if a collision blocks or
-        // redirects the ship, `correct_player_carry` fixes the player up after
-        // the step using the ship's real motion.
+        // zero lag at velocity changes: the player moves with the ship
+        // immediately, so the walls never catch up to it and the solver never
+        // has to shove it (which, combined with the correction, used to double
+        // up into a jolt). When a collision makes the ship move differently than
+        // commanded, `correct_player_carry` reconciles it afterwards.
         let ship_vel = ship_lin.0;
         let ship_ang = ship_ang_vel.0;
 
@@ -267,6 +270,13 @@ pub fn drive_player_on_ship(
 
         let walk = ship_rot * walk_local;
         player_vel.0 = carry + walk;
+
+        // Keep the player's collider aligned with the (rotating) walls *during*
+        // the step, using the predicted orientation. Without this the square
+        // lags the walls by ~omega*dt and its corners catch on them, jittering
+        // while turning. `correct_player_carry` resets this to the exact
+        // post-step orientation for rendering.
+        *player_rot = Rotation::radians(ship_ang * dt) * *ship_rot;
     }
 }
 
