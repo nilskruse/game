@@ -17,6 +17,14 @@ pub struct ShipBase;
 #[derive(Component)]
 pub struct ShipModule;
 
+/// A station the player can sit at to steer the ship. `local_offset` is its
+/// position relative to the ship base origin, used to anchor the seated player
+/// directly from the ship's physics `Position` (no transform-propagation lag).
+#[derive(Component)]
+pub struct PilotSeat {
+    pub local_offset: Vec2,
+}
+
 #[derive(Component)]
 pub struct ModuleAttachmentPoint;
 
@@ -137,6 +145,22 @@ pub fn spawn_player_ship_base(
             Mesh2d(meshes.add(rect)),
             MeshMaterial2d(materials.add(Color::srgb(1., 0., 0.))),
             collision_layers,
+        ))
+    };
+
+    // Pilot seat: a small marker near the front of the ship the player can sit
+    // at to steer. No collider so the player can walk onto it.
+    let seat_offset = Vec2::new(0., 30.);
+    let _pilot_seat = {
+        let seat = Circle::new(8.);
+        commands.spawn((
+            PilotSeat {
+                local_offset: seat_offset,
+            },
+            ChildOf(ship_base),
+            Transform::from_xyz(seat_offset.x, seat_offset.y, 0.5),
+            Mesh2d(meshes.add(seat)),
+            MeshMaterial2d(materials.add(Color::srgb(0., 0.6, 1.))),
         ))
     };
 

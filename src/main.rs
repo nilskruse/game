@@ -31,7 +31,7 @@ use crate::{
     enemy::{spawn_enemy, spawn_enemy_ship},
     faction::InFaction,
     movement::apply_movement_damping,
-    player::{correct_player_carry, drive_player_on_ship, read_player_input},
+    player::{correct_player_carry, drive_player_on_ship, read_player_input, toggle_seat},
     ship::turret::{fire_turret, rotate_turret, select_target},
 };
 
@@ -109,6 +109,9 @@ impl Plugin for Game {
         // );
         // Set the player's velocity each tick *before* the physics step, so the
         // solver carries it with the ship and blocks it on the walls.
+        // `just_pressed` must be polled at frame rate; in FixedUpdate (which can
+        // tick zero or many times per frame) the press edge gets missed.
+        app.add_systems(Update, toggle_seat);
         app.add_systems(FixedUpdate, (read_player_input, drive_player_on_ship).chain());
         // After the solve but before transform writeback, fix the player up
         // against the ship's *actual* motion this step.

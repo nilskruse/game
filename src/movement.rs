@@ -3,7 +3,7 @@ use core::f32;
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
-use crate::ship::PlayerShip;
+use crate::{player::Seated, ship::PlayerShip};
 
 #[derive(Hash, Eq, PartialEq, Default, Copy, Clone, Debug)]
 pub enum Movement {
@@ -14,11 +14,23 @@ pub enum Movement {
 
 pub fn handle_input_ship(
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&mut LinearVelocity, &mut AngularVelocity, &Transform), With<PlayerShip>>,
+    mut query: Query<
+        (Entity, &mut LinearVelocity, &mut AngularVelocity, &Transform),
+        With<PlayerShip>,
+    >,
+    pilots: Query<&Seated>,
 ) {
     const SPEED: f32 = 210.0;
     const ROTATION_SPEED: f32 = 5.;
-    for (mut linear_velocity, mut angular_velocity, transform) in query.iter_mut() {
+    for (ship_entity, mut linear_velocity, mut angular_velocity, transform) in query.iter_mut() {
+        // The ship only responds to steering input while a player is seated at
+        // one of its pilot seats. Otherwise it just coasts (damping slows it).
+        let piloted = pilots.iter().any(|seated| seated.ship == ship_entity);
+        if !piloted {
+            angular_velocity.0 = 0.0;
+            continue;
+        }
+
         let mut rotation_factor = 0.0;
         let mut movement_factor = 0.0;
 
