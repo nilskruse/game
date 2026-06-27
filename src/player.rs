@@ -7,6 +7,28 @@ use crate::{
     ship::{GameLayer, PlayerShip, ShipBase},
 };
 
+/// Rotate a 2D vector by `angle` radians.
+fn rotate_vec(v: Vec2, angle: f32) -> Vec2 {
+    let (s, c) = angle.sin_cos();
+    Vec2::new(c * v.x - s * v.y, s * v.x + c * v.y)
+}
+
+/// Wrap an angle into [-pi, pi].
+fn wrap_pi(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// Snap a vector to the nearest cardinal axis as a unit vector. Used to recover
+/// an axis-aligned wall's exact local normal from a slightly-stale contact
+/// normal.
+fn snap_to_axis(v: Vec2) -> Vec2 {
+    if v.x.abs() >= v.y.abs() {
+        Vec2::new(v.x.signum(), 0.0)
+    } else {
+        Vec2::new(0.0, v.y.signum())
+    }
+}
+
 #[derive(Component)]
 #[require(Character)]
 pub struct Player;
@@ -20,6 +42,21 @@ pub struct OnShip {
 /// Desired walking direction in the ship's local frame, set from input.
 #[derive(Component, Default)]
 pub struct MoveInput(pub Vec2);
+
+/// Snapshot taken before the physics step so the carry can be corrected against
+/// the ship's *actual* motion afterwards. See `drive_player_on_ship` /
+/// `correct_player_carry`.
+#[derive(Component, Default)]
+pub struct CarryState {
+    /// Player position relative to the ship's center of mass, in world space.
+    rel_pre: Vec2,
+    ship_com_pre: Vec2,
+    ship_rot_pre: f32,
+    /// The commanded ship velocity we fed the carry (may differ from reality).
+    ship_lin_cmd: Vec2,
+    ship_ang_cmd: f32,
+    valid: bool,
+}
 
 pub fn spawn_player(
     mut commands: Commands,
@@ -61,12 +98,17 @@ pub fn spawn_player(
             // negligible so walking into a wall never shoves the ship.
             Dominance(-1),
             MoveInput::default(),
+            CarryState::default(),
             Collider::rectangle(25., 25.),
-            // Friction {
-            //     dynamic_coefficient: 0.,
-            //     static_coefficient: 0.,
-            //     combine_rule: CoefficientCombine::Min,
-            // },
+            // Frictionless: the carry already moves the player tangentially with
+            // the ship, so contact friction would only drag it along walls when
+            // the ship turns (the chord-vs-arc velocity mismatch). Min combine
+            // makes the contact frictionless regardless of the wall's friction.
+            Friction {
+                dynamic_coefficient: 0.,
+                static_coefficient: 0.,
+                combine_rule: CoefficientCombine::Min,
+            },
             // Restitution {
             //     coefficient: 0.,
             //     combine_rule: CoefficientCombine::Min,
@@ -131,9 +173,9 @@ pub fn drive_player_on_ship(
         (
             Entity,
             &Position,
-            &mut Rotation,
             &MoveInput,
             &mut LinearVelocity,
+            &mut CarryState,
             &OnShip,
         ),
         Without<ShipBase>,
@@ -151,14 +193,21 @@ pub fn drive_player_on_ship(
 ) {
     const SPEED: f32 = 210.0;
     let dt = time.delta_secs();
-    for (player_entity, player_pos, mut player_rot, input, mut player_vel, on_ship) in
+    for (player_entity, player_pos, input, mut player_vel, mut carry_state, on_ship) in
         query.iter_mut()
     {
-        let Ok((ship_pos, ship_rot, ship_vel, ship_ang, ship_com_local)) =
+        let Ok((ship_pos, ship_rot, ship_lin, ship_ang_vel, ship_com_local)) =
             ship.get(on_ship.ship_entity)
         else {
             continue;
         };
+
+        // Carry with the ship's *commanded* velocity (set this tick) so there's
+        // zero lag. This is only a prediction: if a collision blocks or
+        // redirects the ship, `correct_player_carry` fixes the player up after
+        // the step using the ship's real motion.
+        let ship_vel = ship_lin.0;
+        let ship_ang = ship_ang_vel.0;
 
         // The ship rotates about its center of mass, not its `Position` origin
         // (its walls are uneven, so the COM is offset). Pivot around the global
@@ -171,23 +220,34 @@ pub fn drive_player_on_ship(
         // there's no rotational drift across the deck.
         let r = player_pos.0 - ship_com;
         let carry = if dt > 0.0 {
-            let delta_angle = ship_ang.0 * dt;
-            let (s, c) = delta_angle.sin_cos();
-            let rotated_r = Vec2::new(c * r.x - s * r.y, s * r.x + c * r.y);
-            ship_vel.0 + (rotated_r - r) / dt
+            let rotated_r = rotate_vec(r, ship_ang * dt);
+            ship_vel + (rotated_r - r) / dt
         } else {
-            ship_vel.0
+            ship_vel
         };
 
-        // Player's own walking, expressed in the ship's rotated frame.
-        let mut walk = ship_rot * (input.0.normalize_or_zero() * SPEED);
+        // Snapshot for the post-step correction.
+        *carry_state = CarryState {
+            rel_pre: r,
+            ship_com_pre: ship_com,
+            ship_rot_pre: ship_rot.as_radians(),
+            ship_lin_cmd: ship_vel,
+            ship_ang_cmd: ship_ang,
+            valid: true,
+        };
 
-        // Strip out any part of `walk` that points into a wall we're already
-        // touching. Commanding velocity into a wall forces a sliver of
-        // penetration that the solver pushes back out along the *rotated*
-        // normal, leaving a tangential residue that slides the player along the
-        // wall while turning. Removing the into-wall component avoids that
-        // entirely; the carry term still handles riding the wall.
+        // Player's own walking, in the ship's local frame (input is already
+        // local). We do the wall projection here, in local space, because the
+        // ship's walls are axis-aligned in its frame.
+        let mut walk_local = input.0.normalize_or_zero() * SPEED;
+
+        // Strip out any part of the walk that points into a wall we're already
+        // touching, so we don't command velocity into it (which the solver then
+        // pushes back out along a rotated normal, sliding us along the wall).
+        // The contact normal from `Collisions` is one step stale, so converting
+        // it to the ship frame and snapping it to the nearest local axis
+        // recovers the true wall normal regardless of how far the ship has
+        // turned since.
         for contact in collisions.collisions_with(player_entity) {
             for manifold in &contact.manifolds {
                 // `normal` points from collider1 to collider2 in world space;
@@ -197,19 +257,58 @@ pub fn drive_player_on_ship(
                 } else {
                     manifold.normal
                 };
-                let into_wall = walk.dot(out_of_wall);
+                let local_n = snap_to_axis(ship_rot.inverse() * out_of_wall);
+                let into_wall = walk_local.dot(local_n);
                 if into_wall < 0.0 {
-                    walk -= into_wall * out_of_wall;
+                    walk_local -= into_wall * local_n;
                 }
             }
         }
 
+        let walk = ship_rot * walk_local;
         player_vel.0 = carry + walk;
-        // Slave the player's facing directly to the ship's orientation, predicted
-        // one step ahead so it stays lag-free. Rotation is locked, so this can't
-        // be perturbed by contact torque (which previously tilted the player and
-        // made it skitter along walls).
-        *player_rot = Rotation::radians(ship_ang.0 * dt) * *ship_rot;
+    }
+}
+
+/// After the physics step, snap the player onto the spot it should occupy given
+/// the ship's *actual* motion this step. When the ship moved exactly as
+/// commanded (free flight) the shift is zero; when a collision stopped,
+/// redirected, or rotated the ship, this removes the carry we over-predicted —
+/// so the player neither glides through obstacles nor slides along walls, and
+/// it follows collision-induced rotation. Runs after the solve but before
+/// transform writeback, so the corrected pose renders this frame (no lag).
+pub fn correct_player_carry(
+    time: Res<Time>,
+    mut players: Query<(&mut Position, &mut Rotation, &CarryState, &OnShip), Without<ShipBase>>,
+    ships: Query<(&Position, &Rotation, &ComputedCenterOfMass), With<ShipBase>>,
+) {
+    let dt = time.delta_secs();
+    for (mut player_pos, mut player_rot, state, on_ship) in players.iter_mut() {
+        if !state.valid {
+            continue;
+        }
+        let Ok((ship_pos, ship_rot, ship_com_local)) = ships.get(on_ship.ship_entity) else {
+            continue;
+        };
+        let ship_com_post = ship_pos.0 + ship_rot * ship_com_local.0;
+
+        // Where the player should be if rigidly attached to the ship's *actual*
+        // post-step frame.
+        let d_ang_actual = wrap_pi(ship_rot.as_radians() - state.ship_rot_pre);
+        let actual_target = ship_com_post + rotate_vec(state.rel_pre, d_ang_actual);
+
+        // Where the commanded carry actually placed the player's carry component.
+        let commanded_endpoint = state.ship_com_pre
+            + state.ship_lin_cmd * dt
+            + rotate_vec(state.rel_pre, state.ship_ang_cmd * dt);
+
+        // Shift by the difference; walk and wall-collision adjustments are
+        // preserved because they sit on top of this carry component.
+        player_pos.0 += actual_target - commanded_endpoint;
+
+        // Slave the facing to the ship's true orientation (follows
+        // collision-induced rotation, no lag).
+        *player_rot = *ship_rot;
     }
 }
 
