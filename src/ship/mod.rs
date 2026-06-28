@@ -160,7 +160,8 @@ pub fn spawn_player_ship_base(
     // uses.
     const MID: usize = 1;
 
-    // Bottom side: the main engine (pushes the ship forward).
+    // Bottom (aft) side: the main engine (pushes the ship forward), with an
+    // auto-defense cannon (free arc) on a corner to cover the rear.
     let bottom = crate::build::build_buildable_side(
         &mut commands,
         ship_base,
@@ -179,9 +180,20 @@ pub fn spawn_player_ship_base(
         meshes,
         materials,
     );
+    crate::build::mount_preplaced_turret(
+        &mut commands,
+        ship_base,
+        &bottom[0],
+        Vec2::NEG_Y,
+        crate::ship::turret::TurretKind::Cannon,
+        crate::ship::turret::FireArc::OverShip,
+        meshes,
+        materials,
+    );
 
-    // Top side: a cockpit on the center slot, with maneuvering thrusters on the two
-    // corners — off-center so they can spin the ship (they also reverse and strafe).
+    // Top (front) side: the player-aimed cannon on the center slot, with maneuvering
+    // thrusters on the two corners — off-center so they can spin the ship (they also
+    // reverse and strafe).
     let top = crate::build::build_buildable_side(
         &mut commands,
         ship_base,
@@ -191,11 +203,13 @@ pub fn spawn_player_ship_base(
         meshes,
         materials,
     );
-    crate::build::mount_preplaced_cockpit(
+    crate::build::mount_preplaced_turret(
         &mut commands,
         ship_base,
         &top[MID],
         Vec2::Y,
+        crate::ship::turret::TurretKind::PlayerCannon,
+        crate::ship::turret::FireArc::Hull,
         meshes,
         materials,
     );
@@ -211,7 +225,7 @@ pub fn spawn_player_ship_base(
         );
     }
 
-    // Right side: a starting turret.
+    // Right (starboard) side: the cockpit with the pilot seat.
     let right = crate::build::build_buildable_side(
         &mut commands,
         ship_base,
@@ -221,13 +235,11 @@ pub fn spawn_player_ship_base(
         meshes,
         materials,
     );
-    crate::build::mount_preplaced_turret(
+    crate::build::mount_preplaced_cockpit(
         &mut commands,
         ship_base,
         &right[MID],
         Vec2::X,
-        crate::ship::turret::TurretKind::Cannon,
-        crate::ship::turret::FireArc::Hull,
         meshes,
         materials,
     );

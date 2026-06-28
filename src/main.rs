@@ -31,14 +31,16 @@ use character::Character;
 use movement::{control_player_ship, drive_ships};
 
 use crate::{
-    camera::{move_camera, spawn_camera},
+    camera::{move_camera, scroll_zoom, spawn_camera, CameraZoom},
     docking::{advance_docking, toggle_dock, update_dock_indicators},
     enemy::{fly_enemy_ships, spawn_enemy, spawn_enemy_ship},
     faction::InFaction,
     interaction::interact,
     movement::apply_movement_damping,
     player::{correct_player_carry, drive_player_on_ship, read_player_input, toggle_seat},
-    ship::turret::{fire_turret, point_defense, rotate_turret, select_target, update_pd_slugs},
+    ship::turret::{
+        fire_turret, player_weapons, point_defense, rotate_turret, select_target, update_pd_slugs,
+    },
     world::WorldPlugin,
 };
 
@@ -127,12 +129,16 @@ impl Plugin for Game {
         // (Player-on-ship carry was also prototyped via transform sync, position
         // sync, and substep-schedule velocity injection; all abandoned in favor of
         // the drive + correct_player_carry pair above.)
-        app.add_systems(Update, (fire_turret, point_defense, update_pd_slugs));
+        app.add_systems(
+            Update,
+            (fire_turret, player_weapons, point_defense, update_pd_slugs),
+        );
         app.add_systems(
             Update,
             (effects::expire_lifetimes, effects::animate_hit_sparks),
         );
-        app.add_systems(Update, move_camera);
+        app.init_resource::<CameraZoom>();
+        app.add_systems(Update, (scroll_zoom, move_camera).chain());
         app.add_systems(Update, movement::animate_thrusters);
         app.add_systems(
             RunFixedMainLoop,

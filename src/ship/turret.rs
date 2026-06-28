@@ -7,10 +7,11 @@ use bevy::{
 };
 
 use crate::{
-    build::BuiltModule,
+    build::{BuildMode, BuiltModule},
     effects::{spawn_hit_spark, Hit, Lifetime},
     faction::{Faction, InFaction},
     health::ModuleDisabled,
+    player::Seated,
     ship::{bullet, bullet::Bullet, ShipBase, StructureRoot},
 };
 
@@ -28,20 +29,32 @@ const PD_SLUG_DAMAGE: f32 = 1.0;
 /// Half the gap between the two PD barrels (local units); slugs alternate sides.
 const PD_BARREL_OFFSET: f32 = 7.0;
 /// How fast turrets slew toward their target (radians / second). Point-defense
-/// tracks faster than a main cannon.
+/// tracks faster than a main cannon; a player gun follows the cursor fastest.
 const CANNON_TURN_SPEED: f32 = 6.0;
 const PD_TURN_SPEED: f32 = 13.0;
+const PLAYER_TURN_SPEED: f32 = 16.0;
+/// Seconds between shots from a player-aimed cannon while the trigger is held.
+const PLAYER_FIRE_INTERVAL: f32 = 0.25;
+/// How far to project an aim ray when testing whether a direction clears the ship —
+/// well past any of the firing ship's own structure.
+const AIM_REACH: f32 = 1000.;
+/// Angular step (radians) when searching for the nearest clear aim direction.
+const AIM_SWEEP_STEP: f32 = 0.05;
 
 /// A turret's role. Orthogonal to its [`FireArc`].
 #[derive(Clone, Copy, PartialEq)]
 pub enum TurretKind {
-    /// A regular gun: tracks and shoots enemy ships (see `select_target` /
+    /// A regular gun: auto-tracks and shoots enemy ships (see `select_target` /
     /// `fire_turret`).
     Cannon,
     /// Point-defense: twin short barrels firing a fast alternating stream of slugs at
     /// incoming enemy *projectiles* (not ships) in range, wearing them down over
     /// several hits (see `point_defense` / `update_pd_slugs`); deals no ship damage.
     PointDefense,
+    /// A player-aimed gun (see `player_weapons`): while piloting, it follows the
+    /// cursor and fires on held left-mouse. Can't shoot over its own ship (always
+    /// line-of-sight gated). Not auto-targeted.
+    PlayerCannon,
 }
 
 /// Whether a turret can fire over its own ship. Orthogonal to its [`TurretKind`] —
@@ -60,14 +73,16 @@ impl TurretKind {
         match self {
             TurretKind::Cannon => "Cannon",
             TurretKind::PointDefense => "Point-defense",
+            TurretKind::PlayerCannon => "Player cannon",
         }
     }
 
-    /// Toggle between the kinds, for the build-mode `T` key.
+    /// Cycle through the kinds, for the build-mode `T` key.
     pub fn next(self) -> Self {
         match self {
             TurretKind::Cannon => TurretKind::PointDefense,
-            TurretKind::PointDefense => TurretKind::Cannon,
+            TurretKind::PointDefense => TurretKind::PlayerCannon,
+            TurretKind::PlayerCannon => TurretKind::Cannon,
         }
     }
 }
@@ -147,10 +162,16 @@ pub fn spawn_turret(
             create_pd_mesh(),
             Turret::new(PD_FIRE_INTERVAL, 0., 0., kind, arc),
         ),
+        TurretKind::PlayerCannon => (
+            create_combined_mesh(),
+            Turret::new(PLAYER_FIRE_INTERVAL, 2000., 100., kind, arc),
+        ),
     };
-    // Tint: point-defense is amber; cannons read their arc (over-ship blue, hull white).
+    // Tint: point-defense amber, player gun green; auto cannons read their arc
+    // (over-ship blue, hull white).
     let tint = match kind {
         TurretKind::PointDefense => Color::srgb(1.0, 0.8, 0.2),
+        TurretKind::PlayerCannon => Color::srgb(0.4, 1.0, 0.5),
         TurretKind::Cannon => match arc {
             FireArc::OverShip => Color::srgb(0.4, 0.8, 1.0),
             FireArc::Hull => Color::WHITE,
@@ -174,8 +195,9 @@ pub fn select_target(
     target_query: Query<(Entity, &InFaction)>,
 ) {
     for (turret_entity, turret_faction, turret) in turret_query.iter() {
-        // Point-defense turrets target projectiles, not ships (see `point_defense`).
-        if turret.kind == TurretKind::PointDefense {
+        // Only auto cannons lock ship targets; point-defense tracks projectiles and
+        // player cannons are aimed by the pilot (see `point_defense`/`player_weapons`).
+        if turret.kind != TurretKind::Cannon {
             continue;
         }
         for (target_entity, target_faction) in target_query.iter() {
@@ -187,25 +209,39 @@ pub fn select_target(
     }
 }
 
-pub fn rotate_turret(
+pub(crate) fn rotate_turret(
     time: Res<Time>,
-    mut turret_query: Query<(&Target, &Turret, &mut Transform, &GlobalTransform)>,
-    enemy_query: Query<&GlobalTransform>,
+    mut turret_query: Query<(
+        &Target,
+        &Turret,
+        &mut Transform,
+        &GlobalTransform,
+        &ChildOf,
+        &StructureRoot,
+    )>,
+    targets: Query<&GlobalTransform>,
+    modules: Query<(Entity, &GlobalTransform, &BuiltModule, &StructureRoot)>,
+    hulls: Query<(&GlobalTransform, &Collider), With<ShipBase>>,
 ) {
     let dt = time.delta_secs();
-    for (target, _turret, mut turret_transform, turret_global_transform) in turret_query.iter_mut()
-    {
+    for (target, turret, mut transform, global, child_of, root) in turret_query.iter_mut() {
         // The target may have been destroyed; just skip this turret until it
         // re-acquires (the `Target` relationship is cleared when its entity despawns).
-        let Ok(enemy_global_transform) = enemy_query.get(target.0) else {
+        let Ok(target_gt) = targets.get(target.0) else {
             continue;
         };
-        rotate_toward(
-            &mut turret_transform,
-            turret_global_transform,
-            enemy_global_transform.translation().xy(),
-            CANNON_TURN_SPEED * dt,
+        let pos = global.translation().xy();
+        // A hull turret clamps to the edge of its arc rather than aiming into the ship.
+        let aim = aim_point(
+            pos,
+            target_gt.translation().xy(),
+            turret.arc,
+            root.0,
+            child_of.parent(),
+            &modules,
+            &hulls,
         );
+        rotate_toward(&mut transform, global, aim, CANNON_TURN_SPEED * dt);
     }
 }
 
@@ -383,6 +419,108 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     p.distance(a + ab * t)
 }
 
+/// Player-aimed cannons: while piloting (and not in build mode), each [`PlayerCannon`]
+/// on the piloted ship follows the cursor and fires along its barrel on held left
+/// mouse, gated by its fire rate and by line-of-sight (it can't shoot over its own
+/// ship). The pilot drives the ship with the keyboard and aims/fires with the mouse.
+///
+/// [`PlayerCannon`]: TurretKind::PlayerCannon
+pub(crate) fn player_weapons(
+    time: Res<Time>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    build: Res<BuildMode>,
+    pilots: Query<&Seated>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    mut commands: Commands,
+    mut turrets: Query<(
+        &mut Turret,
+        &GlobalTransform,
+        &mut Transform,
+        &InFaction,
+        &ChildOf,
+        &StructureRoot,
+    )>,
+    disabled: Query<(), With<ModuleDisabled>>,
+    modules: Query<(Entity, &GlobalTransform, &BuiltModule, &StructureRoot)>,
+    hulls: Query<(&GlobalTransform, &Collider), With<ShipBase>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    // Only the piloted ship's guns, and not while building (left-click builds then).
+    if build.active {
+        return;
+    }
+    let Some(seated) = pilots.iter().next() else {
+        return;
+    };
+    let Some(cursor) = cursor_world(&windows, &cameras) else {
+        return;
+    };
+    let firing = mouse.pressed(MouseButton::Left);
+    let dt = time.delta_secs();
+
+    for (mut turret, global, mut transform, faction, child_of, root) in &mut turrets {
+        if turret.kind != TurretKind::PlayerCannon || root.0 != seated.ship {
+            continue;
+        }
+        turret.timer.tick(time.delta());
+        // Shot out with its module? Can't aim or fire.
+        if disabled.contains(child_of.parent()) {
+            continue;
+        }
+
+        // Follow the cursor, but a player cannon can't shoot over its own ship: lock
+        // to the nearest direction that clears it instead of clipping into the hull.
+        let pos = global.translation().xy();
+        let aim = aim_point(
+            pos,
+            cursor,
+            FireArc::Hull,
+            root.0,
+            child_of.parent(),
+            &modules,
+            &hulls,
+        );
+        rotate_toward(&mut transform, global, aim, PLAYER_TURN_SPEED * dt);
+
+        // Fire on held trigger, gated by rate and by the barrel's *current* line being
+        // clear — so it fires wherever it's locked, never through the ship.
+        if !firing || !turret.timer.just_finished() {
+            continue;
+        }
+        let facing = (global.rotation() * Vec3::Y).xy().to_angle();
+        if aim_blocked(pos, facing, root.0, child_of.parent(), &modules, &hulls) {
+            continue;
+        }
+        let rotation = global.rotation();
+        let muzzle = global.translation() + rotation * Vec3::new(0., 100., 0.);
+        let mut spawn_location = Transform::from_translation(muzzle);
+        spawn_location.rotation = rotation;
+        let velocity = (rotation * Vec3::Y).xy() * turret.velocity;
+        bullet::spawn(
+            spawn_location,
+            velocity,
+            turret.damage,
+            faction.0.clone(),
+            commands.reborrow(),
+            &mut meshes,
+            &mut materials,
+        );
+    }
+}
+
+/// Cursor position in world space, or `None` if it's off-window.
+fn cursor_world(
+    windows: &Query<&Window>,
+    cameras: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+) -> Option<Vec2> {
+    let window = windows.iter().next()?;
+    let cursor = window.cursor_position()?;
+    let (camera, cam_transform) = cameras.iter().next()?;
+    camera.viewport_to_world_2d(cam_transform, cursor).ok()
+}
+
 pub(crate) fn fire_turret(
     mut commands: Commands,
     mut turret_query: Query<(
@@ -477,6 +615,69 @@ fn shot_blocked(
         }
     }
     false
+}
+
+/// Whether firing from `turret_pos` along `angle` would pass through ship `root`'s own
+/// structure (a long ray cast against [`shot_blocked`]).
+fn aim_blocked(
+    turret_pos: Vec2,
+    angle: f32,
+    root: Entity,
+    mount: Entity,
+    modules: &Query<(Entity, &GlobalTransform, &BuiltModule, &StructureRoot)>,
+    hulls: &Query<(&GlobalTransform, &Collider), With<ShipBase>>,
+) -> bool {
+    let to = turret_pos + Vec2::from_angle(angle) * AIM_REACH;
+    shot_blocked(turret_pos, to, root, mount, modules, hulls)
+}
+
+/// The aim angle nearest `desired` (radians) from which the turret has a clear shot
+/// past its own ship — `desired` itself if already clear, otherwise swept outward to
+/// the near edge of the blocked arc. `None` only if every direction is blocked.
+fn clear_aim_angle(
+    turret_pos: Vec2,
+    desired: f32,
+    root: Entity,
+    mount: Entity,
+    modules: &Query<(Entity, &GlobalTransform, &BuiltModule, &StructureRoot)>,
+    hulls: &Query<(&GlobalTransform, &Collider), With<ShipBase>>,
+) -> Option<f32> {
+    if !aim_blocked(turret_pos, desired, root, mount, modules, hulls) {
+        return Some(desired);
+    }
+    let mut offset = AIM_SWEEP_STEP;
+    while offset <= std::f32::consts::PI {
+        if !aim_blocked(turret_pos, desired + offset, root, mount, modules, hulls) {
+            return Some(desired + offset);
+        }
+        if !aim_blocked(turret_pos, desired - offset, root, mount, modules, hulls) {
+            return Some(desired - offset);
+        }
+        offset += AIM_SWEEP_STEP;
+    }
+    None
+}
+
+/// The world point a turret should aim at: the `target` itself for an over-ship
+/// turret, or — for a hull turret — a point in the nearest direction that clears its
+/// own ship, so the barrel locks at the edge of its arc instead of clipping the hull.
+fn aim_point(
+    turret_pos: Vec2,
+    target: Vec2,
+    arc: FireArc,
+    root: Entity,
+    mount: Entity,
+    modules: &Query<(Entity, &GlobalTransform, &BuiltModule, &StructureRoot)>,
+    hulls: &Query<(&GlobalTransform, &Collider), With<ShipBase>>,
+) -> Vec2 {
+    let offset = target - turret_pos;
+    if arc == FireArc::OverShip || offset.length_squared() < 1e-6 {
+        return target;
+    }
+    let desired = offset.to_angle();
+    let angle =
+        clear_aim_angle(turret_pos, desired, root, mount, modules, hulls).unwrap_or(desired);
+    turret_pos + Vec2::from_angle(angle) * offset.length()
 }
 
 /// Transform the world segment into `gt`'s local frame and test it against the
