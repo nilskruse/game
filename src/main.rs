@@ -12,6 +12,7 @@ pub mod build;
 pub mod camera;
 pub mod character;
 pub mod docking;
+pub mod effects;
 pub mod enemy;
 pub mod faction;
 pub mod health;
@@ -37,7 +38,7 @@ use crate::{
     interaction::interact,
     movement::apply_movement_damping,
     player::{correct_player_carry, drive_player_on_ship, read_player_input, toggle_seat},
-    ship::turret::{fire_turret, rotate_turret, select_target},
+    ship::turret::{fire_turret, point_defense, rotate_turret, select_target, update_pd_slugs},
     world::WorldPlugin,
 };
 
@@ -126,7 +127,11 @@ impl Plugin for Game {
         // (Player-on-ship carry was also prototyped via transform sync, position
         // sync, and substep-schedule velocity injection; all abandoned in favor of
         // the drive + correct_player_carry pair above.)
-        app.add_systems(Update, fire_turret);
+        app.add_systems(Update, (fire_turret, point_defense, update_pd_slugs));
+        app.add_systems(
+            Update,
+            (effects::expire_lifetimes, effects::animate_hit_sparks),
+        );
         app.add_systems(Update, move_camera);
         app.add_systems(Update, movement::animate_thrusters);
         app.add_systems(

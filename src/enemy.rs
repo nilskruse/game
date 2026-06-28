@@ -144,6 +144,8 @@ pub fn spawn_enemy_ship(
         ship_base,
         &right[MID],
         Vec2::X,
+        crate::ship::turret::TurretKind::Cannon,
+        crate::ship::turret::FireArc::OverShip,
         &mut meshes,
         &mut materials,
     );

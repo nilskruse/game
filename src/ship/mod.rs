@@ -226,12 +226,15 @@ pub fn spawn_player_ship_base(
         ship_base,
         &right[MID],
         Vec2::X,
+        crate::ship::turret::TurretKind::Cannon,
+        crate::ship::turret::FireArc::Hull,
         meshes,
         materials,
     );
 
     // Left side: a docking airlock (opens the doorway so the crew can board a
-    // docked structure).
+    // docked structure), with a point-defense turret on the corner to swat incoming
+    // fire.
     let left = crate::build::build_buildable_side(
         &mut commands,
         ship_base,
@@ -246,6 +249,16 @@ pub fn spawn_player_ship_base(
         ship_base,
         &[&left[MID]],
         Vec2::NEG_X,
+        meshes,
+        materials,
+    );
+    crate::build::mount_preplaced_turret(
+        &mut commands,
+        ship_base,
+        &left[0],
+        Vec2::NEG_X,
+        crate::ship::turret::TurretKind::PointDefense,
+        crate::ship::turret::FireArc::OverShip,
         meshes,
         materials,
     );

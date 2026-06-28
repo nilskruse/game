@@ -77,8 +77,8 @@ pub(crate) fn update_airlock_doors(
 /// Spawn a module of `kind` with the given `footprint` as a child of `body`.
 /// `edge` is the body-local midpoint of the covered attach points (on the hull
 /// edge); `direction` points outward. Dispatches on kind: docking port (thin
-/// sensor collar at the edge), walkable room, plain solid block, or a solid block
-/// with a turret on top.
+/// sensor collar at the edge), walkable room, or a plain solid block (turret
+/// modules are solid blocks; the turret is installed separately).
 pub(crate) fn spawn_module_at(
     commands: &mut Commands,
     body: Entity,
@@ -96,8 +96,8 @@ pub(crate) fn spawn_module_at(
 }
 
 /// Spawn a module and report the sides it exposes (see [`Mounted`]). Dispatches on
-/// kind: docking port (sensor collar, no exposed sides), walkable room, plain solid
-/// block, or a solid block with a turret on top (neither exposes sides).
+/// kind: docking port (sensor collar, no exposed sides), walkable room, or a plain
+/// solid block (solid blocks, including bare turret mounts, expose no sides).
 fn spawn_module_sided(
     commands: &mut Commands,
     body: Entity,
@@ -131,15 +131,9 @@ fn spawn_module_sided(
     let module = spawn_solid_module(
         commands, body, center, direction, kind, footprint, meshes, materials,
     );
-    if kind.mounts_turret() {
-        // Faction is inherited from the hull via hierarchy propagation, so the
-        // turret picks up the player faction just like the old hardcoded one.
-        let turret =
-            crate::ship::turret::spawn_turret(module, commands.reborrow(), meshes, materials);
-        commands
-            .entity(turret)
-            .insert(Transform::from_xyz(0., 0., 0.6));
-    }
+    // A turret module is just a bare mount here; a turret is installed into it
+    // separately (see `mount_preplaced_turret` / build placement) so different turret
+    // classes can go on the same module.
     if let Some(spec) = kind.thruster(direction) {
         spawn_thruster(commands, module, spec, meshes, materials);
     }
@@ -236,21 +230,32 @@ pub(crate) fn mount(
     mounted
 }
 
-/// Pre-mount a turret module on `slot` during ship construction.
+/// Pre-mount a turret module on `slot` during ship construction and install a turret
+/// of `kind`/`arc` into it.
 pub fn mount_preplaced_turret(
     commands: &mut Commands,
     body: Entity,
     slot: &AttachSlot,
     direction: Vec2,
+    kind: crate::ship::turret::TurretKind,
+    arc: crate::ship::turret::FireArc,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
-    mount(
+    let mounted = mount(
         commands,
         body,
         &[slot],
         direction,
         ModuleKind::Turret,
+        meshes,
+        materials,
+    );
+    crate::ship::turret::spawn_turret(
+        mounted.module,
+        kind,
+        arc,
+        commands.reborrow(),
         meshes,
         materials,
     );

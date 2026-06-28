@@ -8,6 +8,7 @@ use super::attach::AttachPoint;
 use super::kinds::{Footprint, ModuleKind};
 use super::spawn::{spawn_module_at, BuiltModule};
 use super::{same_dir, UNIT};
+use crate::ship::turret::{FireArc, TurretKind};
 
 /// How close (world units) the snap-test point must be to an attachment point.
 const SNAP: f32 = 35.;
@@ -38,6 +39,10 @@ pub struct BuildMode {
     /// are active. `None` when not building.
     structure: Option<Entity>,
     selected: Option<ModuleKind>,
+    /// Which turret is installed when placing a [`ModuleKind::Turret`] module: its
+    /// role (cycled with `T`) and firing arc (cycled with `Y`).
+    turret_kind: TurretKind,
+    turret_arc: FireArc,
     /// Body-local outward direction the selected module extends in, set manually
     /// with `R`. Always one of +Y / +X / -Y / -X. The module attaches only to a
     /// side it faces.
@@ -52,6 +57,8 @@ impl Default for BuildMode {
             active: false,
             structure: None,
             selected: None,
+            turret_kind: TurretKind::Cannon,
+            turret_arc: FireArc::Hull,
             facing: Vec2::Y,
             ghost: None,
         }
@@ -278,6 +285,18 @@ pub(crate) fn select_module(
 ) {
     if !build.active {
         return;
+    }
+    // Choose the turret to install when a turret module is selected: T toggles the
+    // role (cannon / point-defense), Y toggles the firing arc (over-ship / hull).
+    if build.selected == Some(ModuleKind::Turret) {
+        if keyboard.just_pressed(KeyCode::KeyT) {
+            build.turret_kind = build.turret_kind.next();
+            return;
+        }
+        if keyboard.just_pressed(KeyCode::KeyY) {
+            build.turret_arc = build.turret_arc.next();
+            return;
+        }
     }
     let kind = if keyboard.just_pressed(KeyCode::Digit1) {
         ModuleKind::Cargo
@@ -707,11 +726,27 @@ pub(crate) fn place_module(
         Vec::new()
     };
 
-    commands.entity(module).insert(BuiltModule {
-        points: resolved.covered.clone(),
-        panels: opened,
-        size: footprint.world_size(resolved.direction),
-    });
+    let (hp, armor) = kind.durability();
+    commands.entity(module).insert((
+        BuiltModule {
+            points: resolved.covered.clone(),
+            panels: opened,
+            size: footprint.world_size(resolved.direction),
+        },
+        crate::health::ModuleHealth::new(hp, armor),
+    ));
+
+    // A turret module is a bare mount; install the currently selected turret.
+    if kind.mounts_turret() {
+        crate::ship::turret::spawn_turret(
+            module,
+            build.turret_kind,
+            build.turret_arc,
+            commands.reborrow(),
+            &mut meshes,
+            &mut materials,
+        );
+    }
 
     for entity in resolved.covered {
         if let Ok((_, mut point, _)) = points.get_mut(entity) {
@@ -791,6 +826,10 @@ pub(crate) fn update_build_text(
     } else {
         match build.selected {
             None => "BUILD MODE — select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway  [7] Cockpit  [8] Thruster   |  click a module to remove   ([B]/[Esc] exit)".to_string(),
+            Some(ModuleKind::Turret) => format!(
+                "BUILD MODE — placing Turret [{} / {}] — click a highlighted attach point   ([T] kind, [Y] arc, [R] rotate, [B]/[Esc] exit)",
+                build.turret_kind.name(), build.turret_arc.name()
+            ),
             Some(kind) => format!(
                 "BUILD MODE — placing {} — click a highlighted attach point   ([R] rotate, [B]/[Esc] exit)",
                 kind.name()

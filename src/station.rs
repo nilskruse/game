@@ -192,12 +192,20 @@ pub fn spawn_space_station(
         );
     }
     for slot in [&right[2], &right[3]] {
-        mount(
+        let mounted = mount(
             &mut commands,
             station,
             &[slot],
             Vec2::X,
             ModuleKind::Turret,
+            meshes,
+            materials,
+        );
+        crate::ship::turret::spawn_turret(
+            mounted.module,
+            crate::ship::turret::TurretKind::Cannon,
+            crate::ship::turret::FireArc::OverShip,
+            commands.reborrow(),
             meshes,
             materials,
         );

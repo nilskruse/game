@@ -26,7 +26,7 @@ There is **no test suite** — this is a real-time game validated by running it.
 - **Piloting** (seated at a cockpit's pilot seat): **W/S** forward/reverse, **A/D** rotate, **Q/E** strafe. Thrust is gated by available thrusters (see thruster system).
 - **F** — interact: sit/stand at a pilot seat, use a console, or open build mode at an engineering console.
 - **G** — dock / undock (must be seated at the helm, lined up with another port).
-- **Build mode** — entered with **F** at an engineering console; **1–8** select module (Cargo/Engine/Sensor/Turret/Dock/Hallway/Cockpit/Thruster); **R** rotates the ghost's facing; left-click places, or (with nothing selected) deconstructs the module under the cursor; **B**/**Esc** exits.
+- **Build mode** — entered with **F** at an engineering console; **1–8** select module (Cargo/Engine/Sensor/Turret/Dock/Hallway/Cockpit/Thruster); with **Turret** selected, **T** cycles the turret kind (Cannon / Point-defense) and **Y** cycles the firing arc (Over-ship / Hull); **R** rotates the ghost's facing; left-click places, or (with nothing selected) deconstructs the module under the cursor; **B**/**Esc** exits.
 - **F1** — debug: toggle player-ship invincibility (the `Invincible` resource; checked in the bullet hit path).
 
 ## Architecture
@@ -74,6 +74,17 @@ Flight is split so any ship (player or AI) flies the same way: a *controller* se
 ### Enemy AI (`src/enemy.rs`)
 `ShipAi { engage_range }` marks an AI-flown ship. `fly_enemy_ships` (in the fixed pre-loop, before the controllers) rotates the ship to point its nose (+Y) at the target and thrusts forward to hold `engage_range`, setting `ThrustControl` + `Piloted` so `drive_ships` flies it. The turret aims/fires on its own by faction, so the AI only positions. It currently targets the player ship; nearest-opposing-faction targeting is the obvious next step. The enemy ship is built from standard modules (main engine + maneuvering thrusters + turret) through the same `mount` path as the player ship.
 
+### Turrets (`src/ship/turret.rs`)
+A **turret module** (`ModuleKind::Turret`) is just a bare solid-block mount; a **turret** is installed into it separately by `spawn_turret(module, kind, arc, …)`, so different turrets can go on the same module. A turret has two **orthogonal** properties:
+- `TurretKind` — role. `Cannon` (tracks & shoots enemy *ships*, via `select_target`/`rotate_turret`/`fire_turret`) or `PointDefense` (twin short barrels, very high fire rate; tracks incoming enemy *projectiles* in `PD_RANGE` and fires fast **slugs** at them via `point_defense`; deals no ship damage). PD turrets never get a ship `Target` (skipped in `select_target`), so the ship-targeting systems ignore them.
+- `FireArc` — `OverShip` (fires from any angle) or `Hull` (a shot is suppressed when the segment turret→target crosses one of its **own** ship's module footprints or hull — `shot_blocked`/`segment_hits_box`, tested in each obstacle's local frame, excluding the turret's own mount). Applies to both kinds.
+
+Turrets slew toward their target at a capped turn rate (`rotate_toward`, `CANNON_TURN_SPEED` / `PD_TURN_SPEED`) and fire along their **current** barrel facing — they track naturally rather than snapping. A PD turret fires a fast stream (`PD_FIRE_INTERVAL`) alternating between its two barrels (`Turret.next_barrel`, `PD_BARREL_OFFSET`). Each PD slug (`PdSlug`, spawned by `spawn_pd_slug`) is a non-physics projectile moved by `update_pd_slugs`; when it reaches an enemy projectile (within `PD_HIT_RADIUS` of its swept segment) it strips `PD_SLUG_DAMAGE` from that projectile's `Bullet.health` (`bullet::BULLET_HEALTH`) and is spent — so a round takes several hits to kill, not one. Slugs that miss expire via `Lifetime` (`expire_lifetimes`).
+
+Install sites: `mount_preplaced_turret(.., kind, arc, ..)` for ship loadouts, an explicit `spawn_turret` after `mount` for the station, and build-mode placement installs `BuildMode.turret_kind`/`turret_arc` (cycled with `T` / `Y` when a turret is selected). Tint: PD amber; cannon by arc (over-ship blue, hull white).
+
+Current loadouts: player ship = `Cannon`/`Hull` (right) plus a `PointDefense`/`OverShip` on the left corner; enemy = `Cannon`/`OverShip`; station = `Cannon`/`OverShip` (inert — no faction, so its turrets never acquire a target). Targeting (`select_target`) is still first-opposing-faction, locked, no range.
+
 ### Health & damage (`src/health.rs`, `src/ship/bullet.rs`)
 Two-tier ship durability:
 - Every module carries `ModuleHealth { current, max, armor }` (added in `mount`; per-kind values from `ModuleKind::durability()`; the hull/engineering root gets one directly in each `spawn_*_ship_base`). `armor` is flat reduction via `apply_armor` (`max(raw − armor, ARMOR_CHIP)`).
@@ -82,6 +93,9 @@ Two-tier ship durability:
 A bullet (`bullet.rs`) carries the firing turret's `Faction`. On hit it walks `ChildOf` up from the struck collider to find the module (first `ModuleHealth` ancestor), the faction (nearest with `InFaction`), and the root; same-faction hits pass through (no friendly fire). Otherwise it applies armored damage to **both** the module and the ship pool. A module at 0 health gets `ModuleDisabled` + a dark overlay; disabled thrusters produce no thrust (`collect_thrust`) and disabled turrets don't fire (`fire_turret`). Bullets are on `GameLayer::Default` filtered to `Default`, so they strike structural bodies once (not interior `Walls`, not the walking `Player`). Characters (with plain `Health`) still take damage through the original `DamageReceived` path.
 
 Each ship gets a floating health bar (`spawn_health_bars` / `update_health_bars`): a top-level (un-parented) entity tracking the ship's `ShipHealth`, kept above the ship and upright (uses the ship's translation, not rotation), with a left-anchored fill scaled/recolored (green→red) by health fraction. It despawns with its ship.
+
+### Effects (`src/effects.rs`)
+Small transient visuals. `Lifetime(Timer)` + `expire_lifetimes` despawn short-lived entities (PD slugs, sparks). `spawn_hit_spark(commands, pos, Hit)` spawns a flash sprite that grows and fades (`HitSpark` + `animate_hit_sparks`), with two looks so feedback is distinguishable: `Hit::Ship` (larger orange burst — a projectile struck a ship/character, from `bullet::on_bullet_hit`) vs `Hit::Intercept` (small cyan spark — point-defense struck an incoming projectile, from `update_pd_slugs`).
 
 ### Other modules
 `world.rs` spawns the world (station, ground) via `WorldPlugin`. `interaction.rs` — `Interactable` + consoles. `camera.rs` — follows player/ship; aligns to the ship in build mode. `action.rs`/`animation.rs`/`health.rs`/`character.rs` — combat, sprite animation, damage. `enemy.rs` builds an enemy ship through the shared module path.

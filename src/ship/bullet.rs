@@ -2,18 +2,26 @@ use avian2d::prelude::*;
 use bevy::prelude::*;
 
 use crate::build::BuiltModule;
+use crate::effects::{spawn_hit_spark, Hit};
 use crate::faction::{Faction, InFaction};
 use crate::health::{
     apply_armor, DamageReceived, Health, Invincible, ModuleDisabled, ModuleHealth, ShipHealth,
 };
 use crate::ship::{GameLayer, PlayerShip};
 
+/// How much punishment a projectile can soak from point-defense before it's
+/// destroyed. >1 PD slug damage means a single slug only chips it, not deletes it.
+pub(crate) const BULLET_HEALTH: f32 = 3.0;
+
 #[derive(Component)]
-struct Bullet {
-    damage: f32,
+pub(crate) struct Bullet {
+    pub(crate) damage: f32,
     /// The faction that fired this shot, so it passes harmlessly through its own
-    /// side instead of damaging it.
-    faction: Faction,
+    /// side instead of damaging it (and so point-defense only targets enemy shots).
+    pub(crate) faction: Faction,
+    /// Durability against point-defense fire (see [`BULLET_HEALTH`]); not its ship
+    /// damage. Each PD slug chips this; the projectile dies at 0.
+    pub(crate) health: f32,
 }
 
 pub fn spawn(
@@ -28,7 +36,11 @@ pub fn spawn(
     let shape = Rectangle::new(5., 10.);
     commands
         .spawn((
-            Bullet { damage, faction },
+            Bullet {
+                damage,
+                faction,
+                health: BULLET_HEALTH,
+            },
             spawn_location,
             Collider::from(shape),
             Mesh2d(meshes.add(shape)),
@@ -53,6 +65,7 @@ fn on_bullet_hit(
     mut materials: ResMut<Assets<ColorMaterial>>,
     invincible: Res<Invincible>,
     bullets: Query<&Bullet>,
+    transforms: Query<&GlobalTransform>,
     parents: Query<&ChildOf>,
     factions: Query<&InFaction>,
     built: Query<&BuiltModule>,
@@ -73,6 +86,11 @@ fn on_bullet_hit(
     let Ok(bullet) = bullets.get(bullet_entity) else {
         return;
     };
+    // Where the impact reads from — the bullet's position as it struck.
+    let hit_pos = transforms
+        .get(bullet_entity)
+        .map(|gt| gt.translation().xy())
+        .unwrap_or_default();
 
     // Walk from the struck collider up to its module (first `ModuleHealth` ancestor),
     // its faction (nearest ancestor that has one), and its structure root (top of the
@@ -132,6 +150,7 @@ fn on_bullet_hit(
             // despawn the same — already-gone — ship and its parts.)
             ship.current -= dmg;
         }
+        spawn_hit_spark(&mut commands, hit_pos, Hit::Ship);
         commands.entity(bullet_entity).try_despawn();
         return;
     }
@@ -142,6 +161,7 @@ fn on_bullet_hit(
             target: other,
             damage: bullet.damage,
         });
+        spawn_hit_spark(&mut commands, hit_pos, Hit::Ship);
         commands.entity(bullet_entity).try_despawn();
     }
 }
