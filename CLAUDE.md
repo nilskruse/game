@@ -50,7 +50,12 @@ One unified path builds **all** modules — player ship, station, and enemy ship
 To assemble a structure: create a root body with a `Collider`, call `build_buildable_side` per side, then `mount`/`mount_far`. See `ship/mod.rs::spawn_player_ship_base` and `station.rs::spawn_space_station`.
 
 ### Docking (`src/docking.rs`)
-`DockingPort` faces along its local **+Y**. `toggle_dock` (Update, so the `G` `just_pressed` edge isn't missed) snapshots every port's world pose, resolves each port's structure via its `StructureRoot` (see below), then finds the nearest aligned free pair and snaps the ship using affine math. A ship may carry several ports; all are considered. Airlock doors/structural colliders (`AirlockDoor`) are disabled while docked so two airlocks meet without ejection.
+`DockingPort` faces along its local **+Y**. `toggle_dock` (Update, so the `G` `just_pressed` edge isn't missed) snapshots every port's world pose, resolves each port's structure via its `StructureRoot` (see below), then finds the nearest aligned free pair (`ports_dockable`) and computes the docked pose with affine math. A ship may carry several ports; all are considered. Airlock doors/structural colliders (`AirlockDoor`) are disabled while docked so two airlocks meet without ejection.
+
+Docking is animated, not instant:
+- On dock, the ports latch immediately (opening airlocks), the ship is switched to `RigidBody::Kinematic` and tagged `Docking { target_pos, target_rot }`; `advance_docking` (FixedUpdate) eases it in with an exponential slide, then swaps `Docking` → `Docked`. Kinematic-during-slide keeps the physics solver from fighting the approaching hull. Steering is suppressed during the slide via `Without<Docking>` on the `movement` ship queries.
+- On undock, the ship returns to `RigidBody::Dynamic` and gets a gentle pushoff velocity (`PUSHOFF_SPEED`) straight out of its port; auto-brake then arrests it.
+- `update_dock_indicators` (Update) recolors each port collar green when a free aligned partner is in range (or it's already engaged), idle orange otherwise — purely geometric, independent of who's seated. Each port owns its material (so it recolors individually, like thruster nozzles).
 
 ### Player-on-ship carry (`src/player.rs`) — subtle, don't refactor blindly
 The player is a separate dynamic body that must move with the ship. The working approach (others were tried and abandoned — see the note in `main.rs`):

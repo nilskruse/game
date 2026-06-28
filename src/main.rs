@@ -31,7 +31,7 @@ use movement::{control_player_ship, drive_ships};
 
 use crate::{
     camera::{move_camera, spawn_camera},
-    docking::toggle_dock,
+    docking::{advance_docking, toggle_dock, update_dock_indicators},
     enemy::{spawn_enemy, spawn_enemy_ship},
     faction::InFaction,
     interaction::interact,
@@ -106,7 +106,11 @@ impl Plugin for Game {
         // solver carries it with the ship and blocks it on the walls.
         // `just_pressed` must be polled at frame rate; in FixedUpdate (which can
         // tick zero or many times per frame) the press edge gets missed.
-        app.add_systems(Update, (toggle_seat, toggle_dock, interact));
+        app.add_systems(
+            Update,
+            (toggle_seat, toggle_dock, interact, update_dock_indicators),
+        );
+        app.add_systems(FixedUpdate, advance_docking);
         app.add_systems(
             FixedUpdate,
             (read_player_input, drive_player_on_ship).chain(),

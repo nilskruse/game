@@ -3,7 +3,7 @@ use bevy::prelude::*;
 
 use crate::{
     build::{BuiltModule, UNIT},
-    docking::Docked,
+    docking::{Docked, Docking},
     player::Seated,
     ship::{
         Piloted, PlayerShip, ShipBase, StructureRoot, ThrustCommand, ThrustControl, Thruster,
@@ -77,7 +77,10 @@ pub(crate) fn control_player_ship(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     pilots: Query<&Seated>,
     mut commands: Commands,
-    mut ships: Query<(Entity, &mut ThrustControl, Has<Docked>, Has<Piloted>), With<PlayerShip>>,
+    mut ships: Query<
+        (Entity, &mut ThrustControl, Has<Docked>, Has<Piloted>),
+        (With<PlayerShip>, Without<Docking>),
+    >,
 ) {
     for (ship, mut control, docked, was_piloted) in &mut ships {
         let piloted = !docked && pilots.iter().any(|seated| seated.ship == ship);
@@ -129,7 +132,7 @@ pub(crate) fn drive_ships(
             Has<Docked>,
             Has<Piloted>,
         ),
-        With<ShipBase>,
+        (With<ShipBase>, Without<Docking>),
     >,
     thrusters: Query<(Entity, &Thruster, &GlobalTransform, &StructureRoot)>,
     modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
