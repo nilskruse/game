@@ -19,6 +19,41 @@ pub struct ShipBase;
 #[derive(Component)]
 pub struct PilotSeat;
 
+/// A thruster module's contribution to a ship's motion. The ship can only thrust
+/// (and rotate) in directions some thruster pushes; see `movement`. Each push also
+/// steers the ship when the thruster is off the center of mass and pushes across it
+/// (decided geometrically in `movement`). All are ship-local axis-aligned units;
+/// `strength` is the thrust per direction. A push whose exhaust is blocked by a
+/// neighbouring module produces no thrust.
+#[derive(Component)]
+pub struct Thruster {
+    pub directions: Vec<Vec2>,
+    pub strength: f32,
+}
+
+/// One exhaust-nozzle marker on a thruster module. `exhaust` is the ship-local
+/// direction the exhaust leaves (opposite the push it represents); used to recolor
+/// the nozzle when that exhaust is blocked.
+#[derive(Component)]
+pub struct ThrusterNozzle {
+    pub exhaust: Vec2,
+}
+
+/// The thrust the pilot is currently commanding, in ship-local signs: each of
+/// `linear.x` / `linear.y` / `rotation` is -1, 0, or +1. Set every frame by
+/// `movement`; drives which thruster nozzles flare. Includes auto-braking (the
+/// opposing direction fires to slow the ship when there's no input).
+#[derive(Component, Default)]
+pub struct ThrustCommand {
+    pub linear: Vec2,
+    pub rotation: f32,
+}
+
+/// Nozzle color when its exhaust is clear (the thrust direction works).
+pub const NOZZLE_OPEN: Color = Color::srgb(0.12, 0.12, 0.14);
+/// Nozzle color when a neighbouring module blocks its exhaust (direction disabled).
+pub const NOZZLE_BLOCKED: Color = Color::srgb(0.65, 0.18, 0.14);
+
 pub fn spawn_player_ship(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -71,6 +106,7 @@ pub fn spawn_player_ship_base(
             PlayerShip,
             Propagate(InFaction(Faction::Player)),
             ShipBase,
+            ThrustCommand::default(),
             RigidBody::Dynamic,
             Transform::from_xyz(100., 0., 0.),
             Collider::from(rectangle),
@@ -87,7 +123,9 @@ pub fn spawn_player_ship_base(
     // each centered on the middle slot, built through the same path the build menu
     // uses.
     const MID: usize = 1;
-    crate::build::build_buildable_side(
+
+    // Bottom side: the main engine (pushes the ship forward).
+    let bottom = crate::build::build_buildable_side(
         &mut commands,
         ship_base,
         half,
@@ -96,8 +134,18 @@ pub fn spawn_player_ship_base(
         meshes,
         materials,
     );
+    crate::build::mount(
+        &mut commands,
+        ship_base,
+        &[&bottom[MID]],
+        Vec2::NEG_Y,
+        crate::build::ModuleKind::Engine,
+        meshes,
+        materials,
+    );
 
-    // Top side: a starting cockpit module (holds the pilot seat).
+    // Top side: a cockpit on the center slot, with maneuvering thrusters on the two
+    // corners — off-center so they can spin the ship (they also reverse and strafe).
     let top = crate::build::build_buildable_side(
         &mut commands,
         ship_base,
@@ -115,6 +163,17 @@ pub fn spawn_player_ship_base(
         meshes,
         materials,
     );
+    for corner in [&top[0], &top[2]] {
+        crate::build::mount(
+            &mut commands,
+            ship_base,
+            &[corner],
+            Vec2::Y,
+            crate::build::ModuleKind::Thruster,
+            meshes,
+            materials,
+        );
+    }
 
     // Right side: a starting turret.
     let right = crate::build::build_buildable_side(

@@ -192,6 +192,66 @@ pub(crate) struct Ghost;
 #[derive(Component)]
 pub(crate) struct BuildText;
 
+/// Crosshair marking the edited structure's center of mass while building (handy
+/// since thruster rotation pivots around it).
+#[derive(Component)]
+pub(crate) struct ComMarker;
+
+/// Spawn the (hidden) center-of-mass crosshair: a translucent disc with a yellow
+/// cross, shown over the structure being edited by [`update_com_marker`].
+pub(crate) fn spawn_com_marker(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let marker = commands
+        .spawn((
+            ComMarker,
+            Transform::from_xyz(0., 0., 20.),
+            Visibility::Hidden,
+        ))
+        .id();
+    let disc = meshes.add(Circle::new(14.));
+    let disc_mat = materials.add(Color::srgba(0., 0., 0., 0.55));
+    commands.spawn((
+        ChildOf(marker),
+        Transform::from_xyz(0., 0., 0.),
+        Mesh2d(disc),
+        MeshMaterial2d(disc_mat),
+    ));
+    let cross_mat = materials.add(Color::srgb(1.0, 0.85, 0.1));
+    for mesh in [Rectangle::new(34., 4.), Rectangle::new(4., 34.)] {
+        commands.spawn((
+            ChildOf(marker),
+            Transform::from_xyz(0., 0., 0.1),
+            Mesh2d(meshes.add(mesh)),
+            MeshMaterial2d(cross_mat.clone()),
+        ));
+    }
+}
+
+/// Show the center-of-mass crosshair over the structure being edited (aligned to
+/// its frame so it reads upright in build mode), hidden otherwise. The CoM shifts
+/// as modules are added or removed, so it's tracked every frame.
+pub(crate) fn update_com_marker(
+    build: Res<BuildMode>,
+    structures: Query<(&GlobalTransform, &ComputedCenterOfMass)>,
+    mut marker: Query<(&mut Transform, &mut Visibility), With<ComMarker>>,
+) {
+    let Ok((mut transform, mut visibility)) = marker.single_mut() else {
+        return;
+    };
+    match build.structure().and_then(|s| structures.get(s).ok()) {
+        Some((gt, com)) => {
+            let world = gt.transform_point(com.0.extend(0.));
+            transform.translation = world.truncate().extend(20.);
+            transform.rotation = gt.rotation();
+            *visibility = Visibility::Visible;
+        }
+        None => *visibility = Visibility::Hidden,
+    }
+}
+
 /// Exit build mode with `B` or `Escape`. Entering build mode is done by interacting
 /// (E) with an engineering console — see [`spawn_build_console`].
 pub(crate) fn exit_build_mode(
@@ -233,6 +293,8 @@ pub(crate) fn select_module(
         ModuleKind::Hallway
     } else if keyboard.just_pressed(KeyCode::Digit7) {
         ModuleKind::Cockpit
+    } else if keyboard.just_pressed(KeyCode::Digit8) {
+        ModuleKind::Thruster
     } else {
         return;
     };
@@ -728,7 +790,7 @@ pub(crate) fn update_build_text(
         String::new()
     } else {
         match build.selected {
-            None => "BUILD MODE — select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway  [7] Cockpit   |  click a module to remove   ([B]/[Esc] exit)".to_string(),
+            None => "BUILD MODE — select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway  [7] Cockpit  [8] Thruster   |  click a module to remove   ([B]/[Esc] exit)".to_string(),
             Some(kind) => format!(
                 "BUILD MODE — placing {} — click a highlighted attach point   ([R] rotate, [B]/[Esc] exit)",
                 kind.name()

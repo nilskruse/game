@@ -121,6 +121,7 @@ impl Plugin for Game {
         // the drive + correct_player_carry pair above.)
         app.add_systems(Update, fire_turret);
         app.add_systems(Update, move_camera);
+        app.add_systems(Update, movement::animate_thrusters);
         app.add_systems(
             RunFixedMainLoop,
             ((

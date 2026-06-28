@@ -73,12 +73,12 @@ struct PortSnapshot {
     docked_to: Option<Entity>,
 }
 
-/// Dock / undock the piloted ship with the press of `F`.
+/// Dock / undock the piloted ship with the press of `G`.
 ///
 /// You must be seated at the helm. If the ship's port is free and lined up with
 /// another free port (in range, both facing each other), the ship snaps so the
 /// two ports meet — coincident and facing opposite — and locks in place. Press
-/// `F` again to release.
+/// `G` again to release.
 ///
 /// Runs in `Update` so the `just_pressed` edge is never missed.
 pub fn toggle_dock(
@@ -98,7 +98,7 @@ pub fn toggle_dock(
         With<ShipBase>,
     >,
 ) {
-    if !keyboard.just_pressed(KeyCode::KeyF) {
+    if !keyboard.just_pressed(KeyCode::KeyG) {
         return;
     }
 

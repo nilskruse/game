@@ -199,7 +199,7 @@ fn resolve_seat_ship(
     }
 }
 
-/// Sit down at / stand up from a nearby pilot seat on press of E.
+/// Sit down at / stand up from a nearby pilot seat on press of F.
 pub fn toggle_seat(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
@@ -209,7 +209,7 @@ pub fn toggle_seat(
     parents: Query<&ChildOf>,
     ships: Query<Entity, With<ShipBase>>,
 ) {
-    if !keyboard_input.just_pressed(KeyCode::KeyE) {
+    if !keyboard_input.just_pressed(KeyCode::KeyF) {
         return;
     }
 

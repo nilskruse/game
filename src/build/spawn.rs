@@ -140,10 +140,50 @@ fn spawn_module_sided(
             .entity(turret)
             .insert(Transform::from_xyz(0., 0., 0.6));
     }
+    if let Some(spec) = kind.thruster(direction) {
+        spawn_thruster(commands, module, spec, meshes, materials);
+    }
     Mounted {
         module,
         sides: Vec::new(),
     }
+}
+
+/// Make `module` a thruster: attach a [`Thruster`](crate::ship::Thruster) from its
+/// `spec`, and draw a dark nozzle on each exhaust face (opposite each push) so its
+/// orientation reads at a glance.
+fn spawn_thruster(
+    commands: &mut Commands,
+    module: Entity,
+    spec: super::kinds::ThrusterSpec,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    let half = UNIT / 2.;
+    for &push in &spec.push {
+        // Exhaust leaves the opposite side from the push: a short bar across that
+        // face (thin along the exhaust axis, wide across it).
+        let exhaust = -push;
+        let mesh = if exhaust.x != 0. {
+            Rectangle::new(10., 22.)
+        } else {
+            Rectangle::new(22., 10.)
+        };
+        let pos = exhaust * (half - 4.);
+        commands.spawn((
+            crate::ship::ThrusterNozzle { exhaust },
+            ChildOf(module),
+            Transform::from_xyz(pos.x, pos.y, 0.55),
+            Mesh2d(meshes.add(mesh)),
+            // Each nozzle gets its own material so it can be recolored when blocked.
+            MeshMaterial2d(materials.add(crate::ship::NOZZLE_OPEN)),
+        ));
+    }
+
+    commands.entity(module).insert(crate::ship::Thruster {
+        directions: spec.push,
+        strength: spec.strength,
+    });
 }
 
 /// Occupy `slots` on `body` and mount a module of `kind` across them, opening the

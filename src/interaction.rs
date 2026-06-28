@@ -58,7 +58,7 @@ fn on_console_interact(event: On<Interacted>, interactables: Query<&Interactable
     }
 }
 
-/// On E, activate the nearest in-range [`Interactable`]. Runs in `Update` so the
+/// On F, activate the nearest in-range [`Interactable`]. Runs in `Update` so the
 /// key edge is never missed.
 pub fn interact(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -66,7 +66,7 @@ pub fn interact(
     player: Query<&Position, With<Player>>,
     interactables: Query<(Entity, &Interactable, &GlobalTransform)>,
 ) {
-    if !keyboard.just_pressed(KeyCode::KeyE) {
+    if !keyboard.just_pressed(KeyCode::KeyF) {
         return;
     }
     let Ok(player_pos) = player.single() else {

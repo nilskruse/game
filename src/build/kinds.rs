@@ -39,6 +39,26 @@ pub(crate) enum ModuleKind {
     Dock,
     Hallway,
     Cockpit,
+    /// Maneuvering thruster: pushes in three directions (inward + both laterals),
+    /// weaker than the main engine. For steering and backing up.
+    Thruster,
+}
+
+/// Thrust capacity, per push direction, of the main engine (the repurposed
+/// [`ModuleKind::Engine`]) and the [`ModuleKind::Thruster`] maneuvering cluster.
+/// The engine is stronger but only pushes one way; the cluster is weaker but
+/// pushes three ways. Tunable.
+pub(crate) const MAIN_THRUST: f32 = 40_000.;
+pub(crate) const MANEUVER_THRUST: f32 = 14_000.;
+
+/// A thruster module's ship-local thrust capability (see [`ModuleKind::thruster`]).
+pub(crate) struct ThrusterSpec {
+    /// Push directions for motion. Each also steers the ship when the thruster sits
+    /// off the center of mass and pushes across it (decided geometrically in
+    /// `movement`), so a sideways engine mounted high turns the ship.
+    pub push: Vec<Vec2>,
+    /// Thrust per direction.
+    pub strength: f32,
 }
 
 impl ModuleKind {
@@ -52,6 +72,7 @@ impl ModuleKind {
             ModuleKind::Dock => (1, 1),
             ModuleKind::Hallway => (1, 2),
             ModuleKind::Cockpit => (1, 1),
+            ModuleKind::Thruster => (1, 1),
         };
         Footprint { width, depth }
     }
@@ -59,12 +80,14 @@ impl ModuleKind {
     pub(crate) fn color(self) -> Color {
         match self {
             ModuleKind::Cargo => Color::srgb(0.55, 0.42, 0.25),
-            ModuleKind::Engine => Color::srgb(0.30, 0.50, 0.70),
+            // The main engine: a hotter, more aggressive metal.
+            ModuleKind::Engine => Color::srgb(0.55, 0.30, 0.30),
             ModuleKind::Sensor => Color::srgb(0.35, 0.60, 0.40),
             ModuleKind::Turret => Color::srgb(0.40, 0.42, 0.45),
             ModuleKind::Dock => Color::srgb(1.0, 0.7, 0.1),
             ModuleKind::Hallway => Color::srgb(0.45, 0.48, 0.52),
             ModuleKind::Cockpit => Color::srgb(0.25, 0.45, 0.65),
+            ModuleKind::Thruster => Color::srgb(0.45, 0.40, 0.50),
         }
     }
 
@@ -77,6 +100,7 @@ impl ModuleKind {
             ModuleKind::Dock => "Dock",
             ModuleKind::Hallway => "Hallway",
             ModuleKind::Cockpit => "Cockpit",
+            ModuleKind::Thruster => "Thruster",
         }
     }
 
@@ -112,5 +136,29 @@ impl ModuleKind {
     /// Whether this is a docking port (a sensor collar at the hull edge, no block).
     pub(crate) fn is_dock(self) -> bool {
         matches!(self, ModuleKind::Dock)
+    }
+
+    /// If this module is a thruster, its ship-local thrust spec: the push directions
+    /// it fires and the thrust per direction. A thruster mounted with outward normal
+    /// `outward` pushes the ship *inward* (`-outward`); the maneuvering cluster also
+    /// pushes along both laterals. Whether a push also steers is decided by geometry
+    /// in `movement` (off-center + pushing across the CoM). Returns `None` for
+    /// non-thrusters.
+    pub(crate) fn thruster(self, outward: Vec2) -> Option<ThrusterSpec> {
+        let inward = -outward;
+        let lateral = Vec2::new(outward.y, -outward.x);
+        match self {
+            // Main engine: powerful, single push.
+            ModuleKind::Engine => Some(ThrusterSpec {
+                push: vec![inward],
+                strength: MAIN_THRUST,
+            }),
+            // Maneuvering cluster: inward + both laterals, weaker.
+            ModuleKind::Thruster => Some(ThrusterSpec {
+                push: vec![inward, lateral, -lateral],
+                strength: MANEUVER_THRUST,
+            }),
+            _ => None,
+        }
     }
 }

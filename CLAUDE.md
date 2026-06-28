@@ -22,10 +22,11 @@ There is **no test suite** — this is a real-time game validated by running it.
 
 ## Controls (for manual testing)
 
-- **WASD / arrows** — walk (on foot) or steer (piloting)
-- **E** — interact (pilot seat, consoles)
-- **F** — dock / undock (must be seated at the helm, lined up with another port)
-- **B** — toggle build mode; **1–6** select module (Cargo/Engine/Sensor/Turret/Dock/Hallway); **R** rotate; left-click places, or (with nothing selected) deconstructs the module under the cursor
+- **On foot**: WASD / arrows to walk.
+- **Piloting** (seated at a cockpit's pilot seat): **W/S** forward/reverse, **A/D** rotate, **Q/E** strafe. Thrust is gated by available thrusters (see thruster system).
+- **F** — interact: sit/stand at a pilot seat, use a console, or open build mode at an engineering console.
+- **G** — dock / undock (must be seated at the helm, lined up with another port).
+- **Build mode** — entered with **F** at an engineering console; **1–8** select module (Cargo/Engine/Sensor/Turret/Dock/Hallway/Cockpit/Thruster); **R** rotates the ghost's facing; left-click places, or (with nothing selected) deconstructs the module under the cursor; **B**/**Esc** exits.
 
 ## Architecture
 

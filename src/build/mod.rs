@@ -8,7 +8,7 @@ mod spawn;
 pub use attach::{build_buildable_side, AttachSlot};
 pub(crate) use kinds::ModuleKind;
 pub use mode::{spawn_build_console, BuildMode};
-pub(crate) use spawn::{mount, Mounted};
+pub(crate) use spawn::{mount, BuiltModule, Mounted};
 pub use spawn::{
     mount_preplaced_cockpit, mount_preplaced_dock, mount_preplaced_turret, spawn_dock_module,
 };
@@ -37,7 +37,7 @@ pub struct BuildPlugin;
 impl Plugin for BuildPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BuildMode>()
-            .add_systems(Startup, mode::spawn_build_ui)
+            .add_systems(Startup, (mode::spawn_build_ui, mode::spawn_com_marker))
             .add_systems(
                 Update,
                 (
@@ -49,6 +49,7 @@ impl Plugin for BuildPlugin {
                     mode::place_module,
                     mode::deconstruct_module,
                     mode::update_build_text,
+                    mode::update_com_marker,
                     spawn::update_airlock_doors,
                 ),
             );
