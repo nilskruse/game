@@ -4,7 +4,7 @@ use bevy::{
     prelude::*,
 };
 
-use crate::{faction::InFaction, ship::bullet};
+use crate::{faction::InFaction, health::ModuleDisabled, ship::bullet};
 
 #[derive(Component)]
 #[require(Transform)]
@@ -59,7 +59,6 @@ pub fn select_target(
     for (turret_entity, turret_faction) in turret_query.iter() {
         for (target_entity, target_faction) in target_query.iter() {
             if turret_faction != target_faction {
-                info!("select target");
                 commands.entity(turret_entity).insert(Target(target_entity));
                 break;
             }
@@ -73,12 +72,10 @@ pub fn rotate_turret(
 ) {
     for (target, _turret, mut turret_transform, turret_global_transform) in turret_query.iter_mut()
     {
+        // The target may have been destroyed; just skip this turret until it
+        // re-acquires (the `Target` relationship is cleared when its entity despawns).
         let Ok(enemy_global_transform) = enemy_query.get(target.0) else {
-            error!(
-                "targetted entity {:?} doesn't exist with transforms",
-                target.0
-            );
-            return;
+            continue;
         };
 
         let enemy_translation = enemy_global_transform.translation().xy();
@@ -101,14 +98,19 @@ pub fn rotate_turret(
 
 pub fn fire_turret(
     mut commands: Commands,
-    mut turret_query: Query<(&mut Turret, &GlobalTransform), With<Target>>,
+    mut turret_query: Query<(&mut Turret, &GlobalTransform, &InFaction, &ChildOf), With<Target>>,
+    disabled: Query<(), With<ModuleDisabled>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     time: Res<Time>,
 ) {
-    for (mut turret, turret_global_transform) in turret_query.iter_mut() {
+    for (mut turret, turret_global_transform, faction, child_of) in turret_query.iter_mut() {
         turret.timer.tick(time.delta());
         if !turret.timer.just_finished() {
+            continue;
+        }
+        // A turret sits on a module block; if that block is shot out, it can't fire.
+        if disabled.contains(child_of.parent()) {
             continue;
         }
         let global_translation = turret_global_transform.translation();
@@ -129,6 +131,7 @@ pub fn fire_turret(
             spawn_location,
             spawn_velocity,
             turret.damage,
+            faction.0.clone(),
             commands.reborrow(),
             &mut meshes,
             &mut materials,

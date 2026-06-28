@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use crate::{
     build::{BuiltModule, UNIT},
     docking::{Docked, Docking},
+    health::ModuleDisabled,
     player::Seated,
     ship::{
         Piloted, PlayerShip, ShipBase, StructureRoot, ThrustCommand, ThrustControl, Thruster,
@@ -134,7 +135,13 @@ pub(crate) fn drive_ships(
         ),
         (With<ShipBase>, Without<Docking>),
     >,
-    thrusters: Query<(Entity, &Thruster, &GlobalTransform, &StructureRoot)>,
+    thrusters: Query<(
+        Entity,
+        &Thruster,
+        &GlobalTransform,
+        &StructureRoot,
+        Has<ModuleDisabled>,
+    )>,
     modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
 ) {
     let dt = time.delta_secs();
@@ -290,13 +297,20 @@ fn collect_thrust(
     ship: Entity,
     ship_gt: &GlobalTransform,
     com: Vec2,
-    thrusters: &Query<(Entity, &Thruster, &GlobalTransform, &StructureRoot)>,
+    thrusters: &Query<(
+        Entity,
+        &Thruster,
+        &GlobalTransform,
+        &StructureRoot,
+        Has<ModuleDisabled>,
+    )>,
     modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
 ) -> ThrustPools {
     let inv = ship_gt.affine().inverse();
     let mut p = ThrustPools::default();
-    for (entity, thruster, gt, root) in thrusters.iter() {
-        if root.0 != ship {
+    for (entity, thruster, gt, root, disabled) in thrusters.iter() {
+        // A thruster on another ship, or one that's been shot out, makes no thrust.
+        if root.0 != ship || disabled {
             continue;
         }
         let offset = inv.transform_point3(gt.translation()).truncate() - com;

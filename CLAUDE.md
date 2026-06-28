@@ -27,6 +27,7 @@ There is **no test suite** — this is a real-time game validated by running it.
 - **F** — interact: sit/stand at a pilot seat, use a console, or open build mode at an engineering console.
 - **G** — dock / undock (must be seated at the helm, lined up with another port).
 - **Build mode** — entered with **F** at an engineering console; **1–8** select module (Cargo/Engine/Sensor/Turret/Dock/Hallway/Cockpit/Thruster); **R** rotates the ghost's facing; left-click places, or (with nothing selected) deconstructs the module under the cursor; **B**/**Esc** exits.
+- **F1** — debug: toggle player-ship invincibility (the `Invincible` resource; checked in the bullet hit path).
 
 ## Architecture
 
@@ -68,7 +69,19 @@ Two components propagate down each structure's hierarchy via `HierarchyPropagate
 - `StructureRoot(Entity)` (`ship/mod.rs`): the ship-hull / station-root entity a part belongs to. Read it for O(1) structure membership instead of walking `ChildOf` and scanning every part each tick — used by the thrust solver, exhaust-blocking, and docking. **Because it lands a frame late, a just-built part is invisible to those systems for one frame (negligible).** Don't reintroduce a `root_of` ChildOf-walk in hot loops.
 
 ### Ship flight (`src/movement.rs`) — faction-agnostic
-Flight is split so any ship (player or AI) flies the same way: a *controller* sets the ship's `ThrustControl` intent (-1/0/1 per axis) and adds the `Piloted` marker; the shared `drive_ships` solver turns intent + thrusters into motion for every `ShipBase`. `control_player_ship` is the only player-specific piece (keyboard → the player ship's `ThrustControl`); an enemy AI would set `ThrustControl` + `Piloted` on its ship instead. A `Piloted` ship auto-brakes toward rest (gated by opposing thrust); a non-`Piloted` ship coasts. `ThrustCommand` is the *effective* per-frame thrust (intent + auto-brake) the solver writes for nozzle visuals. All ships are excluded from `apply_movement_damping` — braking is thruster-gated, not free drag.
+Flight is split so any ship (player or AI) flies the same way: a *controller* sets the ship's `ThrustControl` intent (-1/0/1 per axis) and adds the `Piloted` marker; the shared `drive_ships` solver turns intent + thrusters into motion for every `ShipBase`. The two controllers: `control_player_ship` (keyboard → the player ship's `ThrustControl`) and `fly_enemy_ships` (`enemy.rs`, the AI). A `Piloted` ship auto-brakes toward rest (gated by opposing thrust); a non-`Piloted` ship coasts. `ThrustCommand` is the *effective* per-frame thrust (intent + auto-brake) the solver writes for nozzle visuals. All ships are excluded from `apply_movement_damping` — braking is thruster-gated, not free drag.
+
+### Enemy AI (`src/enemy.rs`)
+`ShipAi { engage_range }` marks an AI-flown ship. `fly_enemy_ships` (in the fixed pre-loop, before the controllers) rotates the ship to point its nose (+Y) at the target and thrusts forward to hold `engage_range`, setting `ThrustControl` + `Piloted` so `drive_ships` flies it. The turret aims/fires on its own by faction, so the AI only positions. It currently targets the player ship; nearest-opposing-faction targeting is the obvious next step. The enemy ship is built from standard modules (main engine + maneuvering thrusters + turret) through the same `mount` path as the player ship.
+
+### Health & damage (`src/health.rs`, `src/ship/bullet.rs`)
+Two-tier ship durability:
+- Every module carries `ModuleHealth { current, max, armor }` (added in `mount`; per-kind values from `ModuleKind::durability()`; the hull/engineering root gets one directly in each `spawn_*_ship_base`). `armor` is flat reduction via `apply_armor` (`max(raw − armor, ARMOR_CHIP)`).
+- The ship root carries `ShipHealth { current, max }`. `max` (capacity) tracks the sum of its modules' max health — kept in step by `sync_ship_health` (which shifts `current` by the same delta when modules are built/removed); `current` is damaged on its own. A ship at 0 is despawned by `destroy_dead_ships` — a dedicated system, not the hit handler, so several hits landing the same frame don't each recursively despawn the same ship (which caused "entity despawned" command errors). Damage-path despawns use `try_despawn`/`try_insert` for the same reason.
+
+A bullet (`bullet.rs`) carries the firing turret's `Faction`. On hit it walks `ChildOf` up from the struck collider to find the module (first `ModuleHealth` ancestor), the faction (nearest with `InFaction`), and the root; same-faction hits pass through (no friendly fire). Otherwise it applies armored damage to **both** the module and the ship pool. A module at 0 health gets `ModuleDisabled` + a dark overlay; disabled thrusters produce no thrust (`collect_thrust`) and disabled turrets don't fire (`fire_turret`). Bullets are on `GameLayer::Default` filtered to `Default`, so they strike structural bodies once (not interior `Walls`, not the walking `Player`). Characters (with plain `Health`) still take damage through the original `DamageReceived` path.
+
+Each ship gets a floating health bar (`spawn_health_bars` / `update_health_bars`): a top-level (un-parented) entity tracking the ship's `ShipHealth`, kept above the ship and upright (uses the ship's translation, not rotation), with a left-anchored fill scaled/recolored (green→red) by health fraction. It despawns with its ship.
 
 ### Other modules
 `world.rs` spawns the world (station, ground) via `WorldPlugin`. `interaction.rs` — `Interactable` + consoles. `camera.rs` — follows player/ship; aligns to the ship in build mode. `action.rs`/`animation.rs`/`health.rs`/`character.rs` — combat, sprite animation, damage. `enemy.rs` builds an enemy ship through the shared module path.

@@ -224,11 +224,15 @@ pub(crate) fn mount(
     let mounted = spawn_module_sided(
         commands, body, edge, direction, kind, footprint, meshes, materials,
     );
-    commands.entity(mounted.module).insert(BuiltModule {
-        points: occupied,
-        panels: opened,
-        size: footprint.world_size(direction),
-    });
+    let (hp, armor) = kind.durability();
+    commands.entity(mounted.module).insert((
+        BuiltModule {
+            points: occupied,
+            panels: opened,
+            size: footprint.world_size(direction),
+        },
+        crate::health::ModuleHealth::new(hp, armor),
+    ));
     mounted
 }
 

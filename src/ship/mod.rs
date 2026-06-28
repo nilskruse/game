@@ -133,6 +133,10 @@ pub fn spawn_player_ship_base(
             PlayerShip,
             Propagate(InFaction(Faction::Player)),
             ShipBase,
+            // The hull is the engineering module: tough, well-armored. Its health
+            // feeds the ship's total pool (see `ShipHealth` / `sync_ship_health`).
+            crate::health::ModuleHealth::new(300., 10.),
+            crate::health::ShipHealth::default(),
             ThrustControl::default(),
             ThrustCommand::default(),
             RigidBody::Dynamic,

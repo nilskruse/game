@@ -1,13 +1,22 @@
 use crate::{
     animation::{Animated, Animations},
-    build::{build_buildable_side, mount_preplaced_turret},
+    build::{build_buildable_side, mount, mount_preplaced_turret, ModuleKind},
     character::Character,
+    docking::{Docked, Docking},
     faction::{Faction, InFaction},
     health::{self, Health},
-    ship::{ShipBase, StructureRoot, ThrustCommand, ThrustControl},
+    ship::{Piloted, PlayerShip, ShipBase, StructureRoot, ThrustCommand, ThrustControl},
 };
 use avian2d::prelude::*;
 use bevy::{app::Propagate, prelude::*};
+
+/// Marks an AI-flown ship. `fly_enemy_ships` steers it toward its target and holds
+/// it at `engage_range`; the ship's turret aims and fires on its own (by faction).
+#[derive(Component)]
+pub struct ShipAi {
+    /// Preferred distance to hold from the target (world units).
+    pub engage_range: f32,
+}
 
 pub fn spawn_enemy(
     mut commands: Commands,
@@ -62,23 +71,70 @@ pub fn spawn_enemy_ship(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let ship_rectangle = Rectangle::new(50., 50.);
+    // A size-3 hull like the player's, with a flight loadout so the AI can actually
+    // maneuver: a main engine for forward thrust and a pair of off-center
+    // maneuvering thrusters for reverse, strafing and rotation. Everything is built
+    // through the shared module path, so these are the same modules you can build.
+    let ship_rectangle = Rectangle::new(150., 150.);
     let ship_base = spawn_enemy_ship_base(
         ship_rectangle,
         commands.reborrow(),
         &mut meshes,
         &mut materials,
     );
-
-    // Mount a turret module on the right side through the shared module path (the
-    // same one the player ship and station use). The turret inherits the Enemy
-    // faction via hierarchy propagation from the ship base.
     let half = ship_rectangle.half_size;
+    const MID: usize = 1;
+
+    // Bottom: main engine (forward thrust, +Y).
+    let bottom = build_buildable_side(
+        &mut commands,
+        ship_base,
+        half,
+        3,
+        Vec2::NEG_Y,
+        &mut meshes,
+        &mut materials,
+    );
+    mount(
+        &mut commands,
+        ship_base,
+        &[&bottom[MID]],
+        Vec2::NEG_Y,
+        ModuleKind::Engine,
+        &mut meshes,
+        &mut materials,
+    );
+
+    // Top corners: maneuvering thrusters (reverse / strafe / rotation), off-center so
+    // they can spin the ship.
+    let top = build_buildable_side(
+        &mut commands,
+        ship_base,
+        half,
+        3,
+        Vec2::Y,
+        &mut meshes,
+        &mut materials,
+    );
+    for corner in [&top[0], &top[2]] {
+        mount(
+            &mut commands,
+            ship_base,
+            &[corner],
+            Vec2::Y,
+            ModuleKind::Thruster,
+            &mut meshes,
+            &mut materials,
+        );
+    }
+
+    // Right: a turret. It inherits the Enemy faction via hierarchy propagation, so it
+    // targets and fires on the player on its own.
     let right = build_buildable_side(
         &mut commands,
         ship_base,
         half,
-        1,
+        3,
         Vec2::X,
         &mut meshes,
         &mut materials,
@@ -86,7 +142,7 @@ pub fn spawn_enemy_ship(
     mount_preplaced_turret(
         &mut commands,
         ship_base,
-        &right[0],
+        &right[MID],
         Vec2::X,
         &mut meshes,
         &mut materials,
@@ -102,21 +158,99 @@ pub fn spawn_enemy_ship_base(
     let ship_base = commands
         .spawn((
             ShipBase,
+            ShipAi { engage_range: 550. },
+            // Hull = engineering module; its health feeds the ship total pool.
+            crate::health::ModuleHealth::new(300., 10.),
+            crate::health::ShipHealth::default(),
             Propagate(InFaction(Faction::Enemy)),
-            // Drivable by the same shared solver as the player ship; an AI sets the
+            // Drivable by the same shared solver as the player ship; the AI sets the
             // `ThrustControl` intent (and adds `Piloted`) — no flight code is
             // player-specific.
             ThrustControl::default(),
             ThrustCommand::default(),
             RigidBody::Dynamic,
-            Transform::from_xyz(-100., 0., 1.),
+            // Start well away from the player so the approach is visible.
+            Transform::from_xyz(-700., 350., 1.),
             Collider::from(rectangle),
             Mesh2d(meshes.add(rectangle)),
-            MeshMaterial2d(materials.add(Color::srgb(1., 1., 0.))),
+            MeshMaterial2d(materials.add(Color::srgb(0.8, 0.2, 0.2))),
         ))
         .id();
     commands
         .entity(ship_base)
         .insert(Propagate(StructureRoot(ship_base)));
     ship_base
+}
+
+/// Fly each AI ship toward its target: rotate to point its nose (+Y) at the target,
+/// and thrust forward to close to `engage_range`, backing off if too near (its turret
+/// does the shooting). Sets the same `ThrustControl` intent + `Piloted` marker the
+/// player's controller uses, so the shared `drive_ships` solver does the rest.
+///
+/// Targets the player ship for now; a fuller version would pick the nearest
+/// opposing-faction ship.
+pub(crate) fn fly_enemy_ships(
+    mut commands: Commands,
+    target: Query<&Position, With<PlayerShip>>,
+    mut ships: Query<
+        (
+            Entity,
+            &Position,
+            &Rotation,
+            &ShipAi,
+            &mut ThrustControl,
+            Has<Piloted>,
+        ),
+        (With<ShipBase>, Without<Docking>, Without<Docked>),
+    >,
+) {
+    let Ok(target_pos) = target.single() else {
+        return;
+    };
+
+    for (entity, pos, rot, ai, mut control, piloted) in &mut ships {
+        let to_target = target_pos.0 - pos.0;
+        let dist = to_target.length();
+        if dist < 1e-3 {
+            continue;
+        }
+
+        // Heading that points the ship's forward (+Y) at the target (matches the
+        // dock/turret +Y-faces-outward convention).
+        let desired = (-to_target.x).atan2(to_target.y);
+        let ang_err = wrap_pi(desired - rot.as_radians());
+        let rotation = if ang_err > 0.05 {
+            1.0
+        } else if ang_err < -0.05 {
+            -1.0
+        } else {
+            0.0
+        };
+
+        // Only drive forward once roughly facing the target (otherwise turn first),
+        // then hold a band around `engage_range`. With no input the solver auto-brakes.
+        let forward = if ang_err.abs() > 0.5 {
+            0.0
+        } else if dist > ai.engage_range * 1.1 {
+            1.0
+        } else if dist < ai.engage_range * 0.9 {
+            -1.0
+        } else {
+            0.0
+        };
+
+        *control = ThrustControl {
+            linear: Vec2::new(0., forward),
+            rotation,
+        };
+        if !piloted {
+            commands.entity(entity).insert(Piloted);
+        }
+    }
+}
+
+/// Wrap an angle to `(-π, π]`.
+fn wrap_pi(a: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    (a + PI).rem_euclid(TAU) - PI
 }

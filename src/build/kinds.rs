@@ -138,6 +138,22 @@ impl ModuleKind {
         matches!(self, ModuleKind::Dock)
     }
 
+    /// Durability of this module: `(max health, armor)`. Armor is flat damage
+    /// reduction (see `health::apply_armor`). Bigger / heavier-duty modules are
+    /// tougher; sensors and corridors are flimsier. Tunable.
+    pub(crate) fn durability(self) -> (f32, f32) {
+        match self {
+            ModuleKind::Cargo => (200., 5.),
+            ModuleKind::Engine => (150., 8.),
+            ModuleKind::Sensor => (80., 3.),
+            ModuleKind::Turret => (120., 6.),
+            ModuleKind::Dock => (100., 4.),
+            ModuleKind::Hallway => (80., 2.),
+            ModuleKind::Cockpit => (120., 5.),
+            ModuleKind::Thruster => (100., 5.),
+        }
+    }
+
     /// If this module is a thruster, its ship-local thrust spec: the push directions
     /// it fires and the thrust per direction. A thruster mounted with outward normal
     /// `outward` pushes the ship *inward* (`-outward`); the maneuvering cluster also

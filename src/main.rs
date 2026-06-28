@@ -32,7 +32,7 @@ use movement::{control_player_ship, drive_ships};
 use crate::{
     camera::{move_camera, spawn_camera},
     docking::{advance_docking, toggle_dock, update_dock_indicators},
-    enemy::{spawn_enemy, spawn_enemy_ship},
+    enemy::{fly_enemy_ships, spawn_enemy, spawn_enemy_ship},
     faction::InFaction,
     interaction::interact,
     movement::apply_movement_damping,
@@ -132,6 +132,7 @@ impl Plugin for Game {
         app.add_systems(
             RunFixedMainLoop,
             ((
+                fly_enemy_ships,
                 control_player_ship,
                 drive_ships,
                 start_actions,
@@ -142,6 +143,18 @@ impl Plugin for Game {
             )
                 .chain()
                 .in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),),
+        );
+        app.init_resource::<health::Invincible>();
+        app.add_systems(Update, health::toggle_invincible);
+        app.add_systems(
+            Update,
+            (
+                health::sync_ship_health,
+                health::destroy_dead_ships,
+                health::spawn_health_bars,
+                health::update_health_bars,
+            )
+                .chain(),
         );
         app.add_observer(health::on_damage_received);
         app.add_systems(Update, display_events);
