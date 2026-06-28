@@ -53,7 +53,11 @@ pub fn build_buildable_side(
     // Wall/panel center sits inset by half a wall thickness; the attach point
     // sits out on the actual edge.
     let perp = (if horizontal { half.y } else { half.x }) - WALL / 2.;
-    let sign = if horizontal { normal.y.signum() } else { normal.x.signum() };
+    let sign = if horizontal {
+        normal.y.signum()
+    } else {
+        normal.x.signum()
+    };
     let base_perp = sign * perp;
     let edge_perp = sign * if horizontal { half.y } else { half.x };
     let layers = CollisionLayers::new(GameLayer::Walls, [GameLayer::Player, GameLayer::Default]);
@@ -112,7 +116,10 @@ pub fn build_buildable_side(
     }
 
     // Solid wall segments filling everything that isn't a doorway gap.
-    let mut gaps: Vec<(f32, f32)> = slots.iter().map(|&c| (c - DOOR / 2., c + DOOR / 2.)).collect();
+    let mut gaps: Vec<(f32, f32)> = slots
+        .iter()
+        .map(|&c| (c - DOOR / 2., c + DOOR / 2.))
+        .collect();
     gaps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     let mut walls: Vec<(f32, f32)> = Vec::new();
     let mut cur = -l;

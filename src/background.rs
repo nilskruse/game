@@ -93,9 +93,33 @@ fn spawn_background(
         .collect();
 
     // Three depth layers: far (slow, small, dim) -> near (fast, big, bright).
-    spawn_star_layer(&mut commands, &star_mesh, &palette, &mut rng, 350, 0.25, (0.7, 1.4));
-    spawn_star_layer(&mut commands, &star_mesh, &palette, &mut rng, 300, 0.5, (1.0, 2.0));
-    spawn_star_layer(&mut commands, &star_mesh, &palette, &mut rng, 200, 0.8, (1.4, 2.8));
+    spawn_star_layer(
+        &mut commands,
+        &star_mesh,
+        &palette,
+        &mut rng,
+        350,
+        0.25,
+        (0.7, 1.4),
+    );
+    spawn_star_layer(
+        &mut commands,
+        &star_mesh,
+        &palette,
+        &mut rng,
+        300,
+        0.5,
+        (1.0, 2.0),
+    );
+    spawn_star_layer(
+        &mut commands,
+        &star_mesh,
+        &palette,
+        &mut rng,
+        200,
+        0.8,
+        (1.4, 2.8),
+    );
 }
 
 fn spawn_star_layer(
@@ -106,7 +130,7 @@ fn spawn_star_layer(
     count: usize,
     strength: f32,
     scale: (f32, f32),
-    ) {
+) {
     for _ in 0..count {
         let base = Vec2::new(
             rng.range(-STAR_TILE / 2., STAR_TILE / 2.),

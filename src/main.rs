@@ -1,3 +1,10 @@
+// Bevy systems routinely take many `Query`/`Res` parameters and deeply nested
+// `Query<(...), (With<..>, Without<..>)>` filter types; these two lints fire on
+// nearly every system and spawn helper, so we allow them crate-wide (the common
+// practice for Bevy projects) rather than obscuring signatures to appease them.
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+
 pub mod action;
 pub mod animation;
 pub mod background;
@@ -17,27 +24,18 @@ pub mod world;
 
 use action::{finish_actions, process_damage_area, start_actions};
 use animation::{animate_sprite, set_animation_direction, set_animation_key, set_animation_type};
-use avian2d::{
-    dynamics::{
-        ccd::SweptCcdSystems,
-        integrator::IntegrationSystems,
-        solver::{schedule::SubstepSolverSystems, xpbd::XpbdSolverSystems, SolverConfig},
-    },
-    physics_transform::PhysicsTransformSystems,
-    prelude::*,
-};
-use bevy::{app::HierarchyPropagatePlugin, prelude::*, render::RenderSystems};
+use avian2d::prelude::*;
+use bevy::{app::HierarchyPropagatePlugin, prelude::*};
 use character::Character;
 use movement::handle_input_ship;
-// use player::spawn_player;
 
 use crate::{
     camera::{move_camera, spawn_camera},
+    docking::toggle_dock,
     enemy::{spawn_enemy, spawn_enemy_ship},
     faction::InFaction,
-    movement::apply_movement_damping,
-    docking::toggle_dock,
     interaction::interact,
+    movement::apply_movement_damping,
     player::{correct_player_carry, drive_player_on_ship, read_player_input, toggle_seat},
     ship::turret::{fire_turret, rotate_turret, select_target},
     world::WorldPlugin,
@@ -89,8 +87,6 @@ pub struct Game;
 
 impl Plugin for Game {
     fn build(&self, app: &mut App) {
-        // app.add_systems(Startup, setup_world);
-        // app.add_systems(Startup, spawn_player);
         app.add_systems(Startup, spawn_obstacle);
         app.add_systems(Startup, spawn_enemy);
         app.add_systems(Startup, spawn_enemy_ship);
@@ -103,27 +99,15 @@ impl Plugin for Game {
         app.add_systems(FixedUpdate, process_damage_area);
         app.add_systems(FixedUpdate, select_target);
         app.add_systems(FixedUpdate, rotate_turret);
-        // app.add_systems(FixedUpdate, player::handle_input_transform);
-        // app.add_systems(
-        //     FixedPostUpdate,
-        //     (player::handle_input, player::sync_with_ship)
-        //         .chain()
-        //         .before(PhysicsTransformSystems::Propagate),
-        // );
-        // app.add_systems(
-        //     FixedPostUpdate,
-        //     player::sync_after.after(PhysicsTransformSystems::PositionToTransform),
-        // );
-        // app.add_systems(
-        //     FixedPostUpdate,
-        //     player::sync_with_ship.before(SolverSystems::Substep),
-        // );
         // Set the player's velocity each tick *before* the physics step, so the
         // solver carries it with the ship and blocks it on the walls.
         // `just_pressed` must be polled at frame rate; in FixedUpdate (which can
         // tick zero or many times per frame) the press edge gets missed.
         app.add_systems(Update, (toggle_seat, toggle_dock, interact));
-        app.add_systems(FixedUpdate, (read_player_input, drive_player_on_ship).chain());
+        app.add_systems(
+            FixedUpdate,
+            (read_player_input, drive_player_on_ship).chain(),
+        );
         // After the solve but before transform writeback, fix the player up
         // against the ship's *actual* motion this step.
         app.add_systems(
@@ -132,36 +116,9 @@ impl Plugin for Game {
                 .after(PhysicsSystems::StepSimulation)
                 .before(PhysicsSystems::Writeback),
         );
-        // app.add_systems(FixedPostUpdate, ( sync_with_ship_via_transform).chain().in_set(PhysicsTransformSystems::PositionToTransform));
-        // app.add_systems(FixedPostUpdate, (player::handle_input_transform, sync_with_ship_via_transform).chain());
-        // app.add_systems(
-        //     PostUpdate,
-        //     sync_with_ship_via_transform
-        //         // .after(TransformSystems::Propagate)
-        //         // .before(PhysicsTransformSystems::PositionToTransform), // don't fight Avian's writeback
-        // );
-
-        // OLD METHOD
-        // app.add_systems(
-        //     SubstepSchedule,
-        //     (player::sync_with_ship_in_substep)
-        //         .chain()
-        //         .after(SubstepSolverSystems::SolveConstraints)
-        //         .before(IntegrationSystems::Position), // .after(XpbdSolverSystems::VelocityProjection),
-        // );
-        // app.add_systems(
-        //     SubstepSchedule,
-        //     player::handle_input_2
-        //         // .before(SubstepSolverSystems::WarmStart)
-        //         // .in_set(SubstepSolverSystems::WarmStart)
-        //         // .before(SweptCcdSystems)
-        //         // .before(SolverSystems::Restitution)
-        //         // .after(SolverSystems::PrepareSolverBodies)
-        //         .before(SubstepSolverSystems::WarmStart)
-        //         .after(IntegrationSystems::Velocity)
-        //         .before(SubstepSolverSystems::SolveConstraints)
-        //         .before(IntegrationSystems::Position),
-        // );
+        // (Player-on-ship carry was also prototyped via transform sync, position
+        // sync, and substep-schedule velocity injection; all abandoned in favor of
+        // the drive + correct_player_carry pair above.)
         app.add_systems(Update, fire_turret);
         app.add_systems(Update, move_camera);
         app.add_systems(

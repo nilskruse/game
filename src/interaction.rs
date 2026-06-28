@@ -76,7 +76,7 @@ pub fn interact(
     let mut best: Option<(Entity, f32)> = None;
     for (entity, interactable, gt) in &interactables {
         let dist = player_pos.0.distance(gt.translation().xy());
-        if dist <= interactable.range && best.map_or(true, |(_, b)| dist < b) {
+        if dist <= interactable.range && best.is_none_or(|(_, b)| dist < b) {
             best = Some((entity, dist));
         }
     }

@@ -3,8 +3,8 @@ use bevy::prelude::*;
 
 use super::attach::AttachPoint;
 use super::kinds::{Footprint, ModuleKind};
-use super::{same_dir, UNIT};
 use super::spawn::{spawn_module_at, BuiltModule};
+use super::{same_dir, UNIT};
 
 /// How close (world units) the snap-test point must be to an attachment point.
 const SNAP: f32 = 35.;
@@ -282,7 +282,9 @@ fn plan(infos: &[PointInfo], cursor: Vec2, size: u32, facing: Vec2) -> Option<Pl
     // Nearest free point on a faced side selects the target side.
     let target = infos
         .iter()
-        .filter(|p| !p.occupied && same_dir(p.direction, facing) && p.world.distance(cursor) <= SNAP)
+        .filter(|p| {
+            !p.occupied && same_dir(p.direction, facing) && p.world.distance(cursor) <= SNAP
+        })
         .min_by(|a, b| {
             a.world
                 .distance(cursor)
@@ -316,9 +318,11 @@ fn plan(infos: &[PointInfo], cursor: Vec2, size: u32, facing: Vec2) -> Option<Pl
         if side[i..i + n].iter().any(|p| p.occupied) {
             continue;
         }
-        let sum = side[i..i + n].iter().fold(Vec2::ZERO, |acc, p| acc + p.world);
+        let sum = side[i..i + n]
+            .iter()
+            .fold(Vec2::ZERO, |acc, p| acc + p.world);
         let d = (sum / n as f32).distance(cursor);
-        if best.map_or(true, |(bd, _)| d < bd) {
+        if best.is_none_or(|(bd, _)| d < bd) {
             best = Some((d, i));
         }
     }
@@ -503,7 +507,7 @@ pub(crate) fn deconstruct_module(
         let h = module.size / 2.;
         if local.x.abs() <= h.x && local.y.abs() <= h.y {
             let d = local.truncate().length();
-            if hit.map_or(true, |(_, best)| d < best) {
+            if hit.is_none_or(|(_, best)| d < best) {
                 hit = Some((entity, d));
             }
         }
@@ -530,7 +534,10 @@ pub(crate) fn deconstruct_module(
     commands.entity(entity).despawn();
 }
 
-pub(crate) fn update_build_text(build: Res<BuildMode>, mut text: Query<&mut Text, With<BuildText>>) {
+pub(crate) fn update_build_text(
+    build: Res<BuildMode>,
+    mut text: Query<&mut Text, With<BuildText>>,
+) {
     let Ok(mut text) = text.single_mut() else {
         return;
     };

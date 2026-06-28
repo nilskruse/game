@@ -1,12 +1,10 @@
 use crate::{
     animation::{Animated, Animations},
+    build::{build_buildable_side, mount_preplaced_turret},
     character::Character,
     faction::{Faction, InFaction},
     health::{self, Health},
-    ship::{
-        create_turret_attachment_point, spawn_module, spawn_module_attachment_point, turret,
-        ShipBase,
-    },
+    ship::ShipBase,
 };
 use avian2d::prelude::*;
 use bevy::{app::Propagate, prelude::*};
@@ -72,29 +70,24 @@ pub fn spawn_enemy_ship(
         &mut materials,
     );
 
-    let module_attachment_point = spawn_module_attachment_point(
+    // Mount a turret module on the right side through the shared module path (the
+    // same one the player ship and station use). The turret inherits the Enemy
+    // faction via hierarchy propagation from the ship base.
+    let half = ship_rectangle.half_size;
+    let right = build_buildable_side(
+        &mut commands,
         ship_base,
-        ship_rectangle,
-        commands.reborrow(),
+        half,
+        1,
+        Vec2::X,
         &mut meshes,
         &mut materials,
     );
-
-    let module_rectangle = Rectangle::new(50., 50.);
-    let module = spawn_module(
-        module_attachment_point,
-        module_rectangle,
-        commands.reborrow(),
-        &mut meshes,
-        &mut materials,
-    );
-
-    let turret_attachment_point =
-        create_turret_attachment_point(module, commands.reborrow(), &mut meshes, &mut materials);
-
-    let _turret = turret::spawn_turret(
-        turret_attachment_point,
-        commands.reborrow(),
+    mount_preplaced_turret(
+        &mut commands,
+        ship_base,
+        &right[0],
+        Vec2::X,
         &mut meshes,
         &mut materials,
     );

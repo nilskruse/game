@@ -12,9 +12,6 @@ pub struct PlayerShip;
 #[derive(Component)]
 pub struct ShipBase;
 
-#[derive(Component)]
-pub struct ShipModule;
-
 /// A station the player can sit at to steer the ship. `local_offset` is its
 /// position relative to the ship base origin, used to anchor the seated player
 /// directly from the ship's physics `Position` (no transform-propagation lag).
@@ -22,13 +19,6 @@ pub struct ShipModule;
 pub struct PilotSeat {
     pub local_offset: Vec2,
 }
-
-#[derive(Component)]
-pub struct ModuleAttachmentPoint;
-
-#[derive(Component)]
-#[require(Transform)]
-pub struct TurretAttachmentPoint;
 
 pub fn spawn_player_ship(
     mut commands: Commands,
@@ -39,11 +29,29 @@ pub fn spawn_player_ship(
     // The ship's starting turret and docking port are pre-mounted buildable
     // modules (see `spawn_player_ship_base`), the same kinds you can build via the
     // build menu.
-    spawn_player_ship_base(ship_rectangle, commands.reborrow(), &mut meshes, &mut materials);
+    spawn_player_ship_base(
+        ship_rectangle,
+        commands.reborrow(),
+        &mut meshes,
+        &mut materials,
+    );
 }
 
+/// Physics collision layers for the game.
+///
+/// IMPORTANT: any collider spawned *without* an explicit [`CollisionLayers`]
+/// component lands on [`GameLayer::Default`] (the first/`#[default]` variant) with
+/// a filter of *all* layers — so it collides with everything. The structural
+/// solidity model relies on this on purpose (ship hulls and module structural
+/// colliders are deliberately left on `Default` so they block other structures).
+/// The flip side: a new decorative/child collider you forget to tag will silently
+/// become a solid obstacle for ships and the player. When in doubt, set
+/// `CollisionLayers` explicitly.
 #[derive(PhysicsLayer, Default)]
 pub enum GameLayer {
+    /// Structural bodies: ship hulls and module/room structural colliders. Block
+    /// other structures (and the player, via the `Walls` filter). Also the
+    /// implicit membership of any untagged collider — see the note above.
     #[default]
     Default,
     /// Interior walls (hull, modules, station rooms). They block the player but
@@ -146,59 +154,4 @@ pub fn spawn_player_ship_base(
     };
 
     ship_base
-}
-
-pub fn spawn_module(
-    parent: Entity,
-    rectangle: Rectangle,
-    mut commands: Commands,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<ColorMaterial>>,
-) -> Entity {
-    commands
-        .spawn((
-            ShipModule,
-            Transform::from_xyz(rectangle.half_size.x, 0., 1.),
-            Collider::from(rectangle),
-            Mesh2d(meshes.add(rectangle)),
-            MeshMaterial2d(materials.add(Color::srgb(1., 1., 0.))),
-            ChildOf(parent),
-        ))
-        .id()
-}
-
-pub fn spawn_module_attachment_point(
-    parent: Entity,
-    parent_rectangle: Rectangle,
-    mut commands: Commands,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<ColorMaterial>>,
-) -> Entity {
-    let half_width = parent_rectangle.half_size.x;
-
-    commands
-        .spawn((
-            ModuleAttachmentPoint,
-            Transform::from_xyz(half_width, 0., 0.),
-            ChildOf(parent),
-            Mesh2d(meshes.add(Circle::new(5.))),
-            MeshMaterial2d(materials.add(Color::srgb(0., 0., 1.))),
-        ))
-        .id()
-}
-
-pub fn create_turret_attachment_point(
-    parent: Entity,
-    mut commands: Commands,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<ColorMaterial>>,
-) -> Entity {
-    commands
-        .spawn((
-            TurretAttachmentPoint,
-            ChildOf(parent),
-            Mesh2d(meshes.add(Circle::new(5.))),
-            MeshMaterial2d(materials.add(Color::srgb(0., 0., 1.))),
-        ))
-        .id()
 }

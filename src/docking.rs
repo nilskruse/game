@@ -172,7 +172,7 @@ pub fn toggle_dock(
             if ship_port.normal.dot(dir) <= 0.0 || cand.normal.dot(-dir) <= 0.0 {
                 continue;
             }
-            if best.map_or(true, |(_, _, b)| dist < b) {
+            if best.is_none_or(|(_, _, b)| dist < b) {
                 best = Some((ship_port, cand, dist));
             }
         }

@@ -63,7 +63,7 @@ pub(crate) fn update_airlock_doors(
     mut doors: Query<(Entity, &AirlockDoor, &mut Visibility, Has<ColliderDisabled>)>,
 ) {
     for (entity, door, mut visibility, disabled) in &mut doors {
-        let docked = ports.get(door.port).map_or(false, |p| p.docked_to.is_some());
+        let docked = ports.get(door.port).is_ok_and(|p| p.docked_to.is_some());
         if docked && !disabled {
             commands.entity(entity).insert(ColliderDisabled);
             *visibility = Visibility::Hidden;
@@ -89,7 +89,10 @@ pub(crate) fn spawn_module_at(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    spawn_module_sided(commands, body, edge, direction, kind, footprint, meshes, materials).module
+    spawn_module_sided(
+        commands, body, edge, direction, kind, footprint, meshes, materials,
+    )
+    .module
 }
 
 /// Spawn a module and report the sides it exposes (see [`Mounted`]). Dispatches on
@@ -107,25 +110,36 @@ fn spawn_module_sided(
 ) -> Mounted {
     if kind.is_dock() {
         let module = spawn_dock_module(commands, body, edge, direction, meshes, materials);
-        return Mounted { module, sides: Vec::new() };
+        return Mounted {
+            module,
+            sides: Vec::new(),
+        };
     }
 
     // A module centers half its depth outside the edge.
     let center = edge + direction * (footprint.depth as f32 * UNIT / 2.);
     if kind.walkable() {
-        return spawn_module_room(commands, body, center, direction, kind, footprint, meshes, materials);
+        return spawn_module_room(
+            commands, body, center, direction, kind, footprint, meshes, materials,
+        );
     }
 
-    let module = spawn_solid_module(commands, body, center, direction, kind, footprint, meshes, materials);
+    let module = spawn_solid_module(
+        commands, body, center, direction, kind, footprint, meshes, materials,
+    );
     if kind.mounts_turret() {
         // Faction is inherited from the hull via hierarchy propagation, so the
         // turret picks up the player faction just like the old hardcoded one.
-        let turret = crate::ship::turret::spawn_turret(module, commands.reborrow(), meshes, materials);
+        let turret =
+            crate::ship::turret::spawn_turret(module, commands.reborrow(), meshes, materials);
         commands
             .entity(turret)
             .insert(Transform::from_xyz(0., 0., 0.6));
     }
-    Mounted { module, sides: Vec::new() }
+    Mounted {
+        module,
+        sides: Vec::new(),
+    }
 }
 
 /// Occupy `slots` on `body` and mount a module of `kind` across them, opening the
@@ -163,7 +177,9 @@ pub(crate) fn mount(
         occupied.push(slot.entity);
     }
     let edge = sum / slots.len() as f32;
-    let mounted = spawn_module_sided(commands, body, edge, direction, kind, footprint, meshes, materials);
+    let mounted = spawn_module_sided(
+        commands, body, edge, direction, kind, footprint, meshes, materials,
+    );
     commands.entity(mounted.module).insert(BuiltModule {
         points: occupied,
         panels: opened,
@@ -181,7 +197,15 @@ pub fn mount_preplaced_turret(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
-    mount(commands, body, &[slot], direction, ModuleKind::Turret, meshes, materials);
+    mount(
+        commands,
+        body,
+        &[slot],
+        direction,
+        ModuleKind::Turret,
+        meshes,
+        materials,
+    );
 }
 
 /// Pre-mount a docking-port module spanning `slots` during construction.
@@ -193,7 +217,15 @@ pub fn mount_preplaced_dock(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
-    mount(commands, body, slots, direction, ModuleKind::Dock, meshes, materials);
+    mount(
+        commands,
+        body,
+        slots,
+        direction,
+        ModuleKind::Dock,
+        meshes,
+        materials,
+    );
 }
 
 /// Attach a solid (non-walkable) module block. The hull doorway stays sealed and
@@ -373,12 +405,34 @@ fn spawn_module_room(
         }
         if same_dir(normal, direction) {
             // Outward end: always buildable, exposing `width` attach points.
-            let slots = build_buildable_side(commands, module, half, footprint.width, normal, meshes, materials);
-            sides.push(MountedSide { direction: normal, slots });
+            let slots = build_buildable_side(
+                commands,
+                module,
+                half,
+                footprint.width,
+                normal,
+                meshes,
+                materials,
+            );
+            sides.push(MountedSide {
+                direction: normal,
+                slots,
+            });
         } else if footprint.is_square() {
             // Long sides of a square room are buildable too (exposing `depth`).
-            let slots = build_buildable_side(commands, module, half, footprint.depth, normal, meshes, materials);
-            sides.push(MountedSide { direction: normal, slots });
+            let slots = build_buildable_side(
+                commands,
+                module,
+                half,
+                footprint.depth,
+                normal,
+                meshes,
+                materials,
+            );
+            sides.push(MountedSide {
+                direction: normal,
+                slots,
+            });
         } else {
             // Long sides of an elongated room are solid walls.
             spawn_solid_wall(commands, module, half, normal, meshes, materials);
@@ -410,7 +464,11 @@ fn spawn_solid_wall(
     let horizontal = normal.x == 0.0;
     let l = if horizontal { half.x } else { half.y };
     let perp = (if horizontal { half.y } else { half.x }) - WALL / 2.;
-    let sign = if horizontal { normal.y.signum() } else { normal.x.signum() };
+    let sign = if horizontal {
+        normal.y.signum()
+    } else {
+        normal.x.signum()
+    };
     let base_perp = sign * perp;
     let (wsize, wpos) = if horizontal {
         (Vec2::new(2. * l, WALL), Vec2::new(0., base_perp))

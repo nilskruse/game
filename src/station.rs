@@ -1,7 +1,7 @@
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
-use crate::build::{build_buildable_side, mount, ModuleKind, Mounted, AttachSlot, UNIT};
+use crate::build::{build_buildable_side, mount, AttachSlot, ModuleKind, Mounted, UNIT};
 use crate::{interaction::spawn_console, world::WorldElement};
 
 /// Marker for a space station's root entity.
@@ -43,32 +43,147 @@ pub fn spawn_space_station(
         ))
         .id();
 
-    let up = build_buildable_side(&mut commands, station, half, hub_size, Vec2::Y, meshes, materials);
-    let down = build_buildable_side(&mut commands, station, half, hub_size, Vec2::NEG_Y, meshes, materials);
-    let left = build_buildable_side(&mut commands, station, half, hub_size, Vec2::NEG_X, meshes, materials);
-    let right = build_buildable_side(&mut commands, station, half, hub_size, Vec2::X, meshes, materials);
+    let up = build_buildable_side(
+        &mut commands,
+        station,
+        half,
+        hub_size,
+        Vec2::Y,
+        meshes,
+        materials,
+    );
+    let down = build_buildable_side(
+        &mut commands,
+        station,
+        half,
+        hub_size,
+        Vec2::NEG_Y,
+        meshes,
+        materials,
+    );
+    let left = build_buildable_side(
+        &mut commands,
+        station,
+        half,
+        hub_size,
+        Vec2::NEG_X,
+        meshes,
+        materials,
+    );
+    let right = build_buildable_side(
+        &mut commands,
+        station,
+        half,
+        hub_size,
+        Vec2::X,
+        meshes,
+        materials,
+    );
 
     // North: a corridor up to a docking port, on the centered slot.
-    let corridor = mount(&mut commands, station, &[&up[1]], Vec2::Y, ModuleKind::Hallway, meshes, materials);
-    mount_far(&mut commands, &corridor, Vec2::Y, ModuleKind::Dock, meshes, materials);
+    let corridor = mount(
+        &mut commands,
+        station,
+        &[&up[1]],
+        Vec2::Y,
+        ModuleKind::Hallway,
+        meshes,
+        materials,
+    );
+    mount_far(
+        &mut commands,
+        &corridor,
+        Vec2::Y,
+        ModuleKind::Dock,
+        meshes,
+        materials,
+    );
 
     // South: a 2x2 cargo hold, with a corridor + second docking port chained off
     // its far end (so the station, like a ship, can carry several docks).
-    let hold = mount(&mut commands, station, &[&down[0], &down[1]], Vec2::NEG_Y, ModuleKind::Cargo, meshes, materials);
-    let corridor2 = mount_far(&mut commands, &hold, Vec2::NEG_Y, ModuleKind::Hallway, meshes, materials);
-    mount_far(&mut commands, &corridor2, Vec2::NEG_Y, ModuleKind::Dock, meshes, materials);
+    let hold = mount(
+        &mut commands,
+        station,
+        &[&down[0], &down[1]],
+        Vec2::NEG_Y,
+        ModuleKind::Cargo,
+        meshes,
+        materials,
+    );
+    let corridor2 = mount_far(
+        &mut commands,
+        &hold,
+        Vec2::NEG_Y,
+        ModuleKind::Hallway,
+        meshes,
+        materials,
+    );
+    mount_far(
+        &mut commands,
+        &corridor2,
+        Vec2::NEG_Y,
+        ModuleKind::Dock,
+        meshes,
+        materials,
+    );
 
     // West: a 2x2 crew lounge.
-    mount(&mut commands, station, &[&left[0], &left[1]], Vec2::NEG_X, ModuleKind::Cargo, meshes, materials);
+    mount(
+        &mut commands,
+        station,
+        &[&left[0], &left[1]],
+        Vec2::NEG_X,
+        ModuleKind::Cargo,
+        meshes,
+        materials,
+    );
 
     // East: external equipment — an engine and a sensor block (solid modules
     // fronted by access consoles in the hub), and a defense turret between them.
-    mount(&mut commands, station, &[&right[0]], Vec2::X, ModuleKind::Engine, meshes, materials);
-    mount(&mut commands, station, &[&right[1]], Vec2::X, ModuleKind::Turret, meshes, materials);
-    mount(&mut commands, station, &[&right[2]], Vec2::X, ModuleKind::Sensor, meshes, materials);
+    mount(
+        &mut commands,
+        station,
+        &[&right[0]],
+        Vec2::X,
+        ModuleKind::Engine,
+        meshes,
+        materials,
+    );
+    mount(
+        &mut commands,
+        station,
+        &[&right[1]],
+        Vec2::X,
+        ModuleKind::Turret,
+        meshes,
+        materials,
+    );
+    mount(
+        &mut commands,
+        station,
+        &[&right[2]],
+        Vec2::X,
+        ModuleKind::Sensor,
+        meshes,
+        materials,
+    );
     let edge = half.x - 20.;
-    spawn_console(station, Vec2::new(edge, right[0].local.y), "Engine", commands.reborrow(), meshes, materials);
-    spawn_console(station, Vec2::new(edge, right[2].local.y), "Sensors", commands.reborrow(), meshes, materials);
+    spawn_console(
+        station,
+        Vec2::new(edge, right[0].local.y),
+        "Engine",
+        commands.reborrow(),
+        meshes,
+        materials,
+    );
+    spawn_console(
+        station,
+        Vec2::new(edge, right[2].local.y),
+        "Sensors",
+        commands.reborrow(),
+        meshes,
+        materials,
+    );
 
     station
 }
@@ -86,5 +201,13 @@ fn mount_far(
 ) -> Mounted {
     let width = kind.footprint().width as usize;
     let slots: Vec<&AttachSlot> = parent.side(direction).iter().take(width).collect();
-    mount(commands, parent.module, &slots, direction, kind, meshes, materials)
+    mount(
+        commands,
+        parent.module,
+        &slots,
+        direction,
+        kind,
+        meshes,
+        materials,
+    )
 }

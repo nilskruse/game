@@ -6,10 +6,10 @@ mod mode;
 mod spawn;
 
 pub use attach::{build_buildable_side, AttachSlot};
-pub use mode::BuildMode;
-pub use spawn::{mount_preplaced_dock, mount_preplaced_turret, spawn_dock_module};
 pub(crate) use kinds::ModuleKind;
+pub use mode::BuildMode;
 pub(crate) use spawn::{mount, Mounted};
+pub use spawn::{mount_preplaced_dock, mount_preplaced_turret, spawn_dock_module};
 
 /// One size step in world units. A body of "size N" is `N * UNIT` on each side
 /// and exposes N attachment points per side.

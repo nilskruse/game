@@ -86,7 +86,10 @@ impl ModuleKind {
     /// Whether placing this opens the covered hull doorways (so the crew can pass
     /// through): walkable rooms, and docking ports (to board a docked structure).
     pub(crate) fn opens_doorway(self) -> bool {
-        matches!(self, ModuleKind::Cargo | ModuleKind::Hallway | ModuleKind::Dock)
+        matches!(
+            self,
+            ModuleKind::Cargo | ModuleKind::Hallway | ModuleKind::Dock
+        )
     }
 
     /// Whether a weapon turret is mounted on top of the module's block.
