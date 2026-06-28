@@ -1,11 +1,14 @@
 use bevy::prelude::*;
 
 mod attach;
+mod blueprint;
 mod kinds;
 mod mode;
 mod spawn;
 
+pub(crate) use attach::AttachPoint;
 pub use attach::{build_buildable_side, AttachSlot};
+pub(crate) use blueprint::{build_structure, dump_blueprints, extract_blueprint, Blueprint};
 pub(crate) use kinds::ModuleKind;
 pub use mode::{spawn_build_console, BuildMode};
 pub(crate) use spawn::{mount, BuiltModule, Mounted};

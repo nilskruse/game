@@ -28,6 +28,7 @@ There is **no test suite** — this is a real-time game validated by running it.
 - **G** — dock / undock (must be seated at the helm, lined up with another port).
 - **Build mode** — entered with **F** at an engineering console; **1–8** select module (Cargo/Engine/Sensor/Turret/Dock/Hallway/Cockpit/Thruster); with **Turret** selected, **T** cycles the turret kind (Cannon / Point-defense) and **Y** cycles the firing arc (Over-ship / Hull); **R** rotates the ghost's facing; left-click places, or (with nothing selected) deconstructs the module under the cursor; **B**/**Esc** exits.
 - **F1** — debug: toggle player-ship invincibility (the `Invincible` resource; checked in the bullet hit path).
+- **F5 / F9** — save / load (see Persistence). Mouse wheel zooms (smooth).
 
 ## Architecture
 
@@ -99,8 +100,58 @@ Small transient visuals. `Lifetime(Timer)` + `expire_lifetimes` despawn short-li
 
 Hit positions avoid `GlobalTransform` (propagated in `PostUpdate`, so it lags a frame and places the marker short of where a fast bullet actually is). The ship-hit spark uses avian's world-space contact point (`Collisions::get(bullet, other)` → first manifold point's `.point`) so it sits on the struck surface, falling back to the bullet's physics `Position`. PD aim/intercepts read the bullet's `Position`. Don't use `GlobalTransform` for projectile-hit placement.
 
+### Persistence (`src/save.rs`)
+Save/load via serde + RON, read/written from `save.ron` (F5 save / F9 load). The key principle: **don't serialize live entities** (meshes/colliders/hierarchies are derived) — persist a plain-data snapshot (primitive fields, no `glam`/`avian` types) and rebuild the world from it. Cross-references must avoid raw `Entity` (runtime-only); use stable ids/markers.
+
+**Chunked, colocated save framework — each feature owns its own chunk.** The on-disk `SaveFile` is `{ version, chunks: BTreeMap<String, String> }`: a map of named chunks, each an independently-serialized RON blob. A feature persists itself by registering a *capture* system (writes its chunk via `SaveFile::write(key, &T)`) in `PersistSet::Capture` and an *apply* system (reads via `SaveFile::read::<T>(key)`) in `PersistSet::Apply` — `save.rs` never has to know what a feature persists. **To add persistence for a new system, add its capture/apply systems to those sets in its own module; do not edit a central save struct.** Adding/removing a whole chunk needs no `SAVE_VERSION` bump (a missing chunk → `read` returns `None` → feature default); bump only when an existing chunk's format changes incompatibly. Examples: `camera::{capture_camera, apply_camera}` (zoom), `player::{capture_player, apply_player}` (pos + piloting `InstanceId`).
+
+The pipeline runs in `Update` via two run-condition-gated sets (`saving`/`loading` read a `PersistOp` flag): **save** = `request_save` (F5 → stamp version, clear chunks, flag) → `PersistSet::Capture` (features write chunks) → `commit_save` (write file); **load** = `request_load` (F9) / `request_load_on_start` (PostStartup) parse the file into `SaveFile` + version-check + flag → `load_structures` (rebuild the world skeleton, see below) → `PersistSet::Apply` (features restore chunks) → `commit_load`. A whole load/save completes in one frame.
+
+**Target model — "snapshot + inject new":** the save stores a full blueprint of *every* live structure (authored or built) plus the set of authored `ContentId`s it knew about; on load, rebuild all saved structures, then world-setup spawns any authored `ContentId` **not** in the save's known set (= content added since the save). So new hand-authored content appears in old saves; destroyed authored content stays gone (it's in the known set with no live instance). A `version` field guards schema migrations.
+
+**Identity (built):** `Origin` (`Authored(ContentId)` vs `PlayerBuilt`) distinguishes hand-authored from player-built — at runtime *and* in saves. `InstanceId(u64)` is a stable per-instance id (from the persisted `NextInstanceId`, assigned by `assign_instance_ids`) used for cross-references instead of raw `Entity`.
+
+**The structures chunk** is owned by `save.rs` (key `"structures"`, a `StructuresChunk` of every structure's blueprint + origin + instance + dynamic state, plus `next_instance_id` and `known_content_ids`). It's special among chunks because restoring it clears and respawns entities, so `load_structures` drives it **before** `PersistSet::Apply` (feature apply systems may reference rebuilt structures by `InstanceId`). Stages: (1) identity & origin; (2) blueprint model + `extract_blueprint` (`build/blueprint.rs`: `Blueprint`/`ModuleSpec`/`RootKind`; modules record their `kind` in `BuiltModule`); (3) generic `build_structure(blueprint, body, origin, instance)` — `spawn_root` makes the bare hull per `RootKind` (mirrors `spawn_*_base`; **keep in sync**), then replays each module by matching `ModuleSpec.slots` to the parent body's attach-point locals (+ `mount`, install turret, set/disable health); (4) `capture_structures` extracts the chunk, `load_structures` clears current structures + rebuilds saved ones via `build_structure`, then `spawn_authored` injects any `AUTHORED_CONTENT` id not in the save's known set. `extract_blueprint` orders modules so parents precede children (depth from root), so chained structures (station corridor arms) round-trip.
+
+Piloting is persisted: the save records the piloted ship's `InstanceId`; load un-seats then `apply_pending_pilot` (`player.rs`, via the `PendingPilot` resource) re-seats the player at the rebuilt ship's pilot seat once it exists (retried each frame, since the rebuild is deferred). This is the pattern for re-linking saved `Entity` cross-refs by `InstanceId` after load.
+
+**Watch for dangling `Entity` refs after replacing structures.** Load/new-game despawn the old structures, so anything holding the old ship's `Entity` breaks. `OnShip` (which `drive_player_on_ship` reads to carry the player — for both walking and seated) is re-linked each frame by `keep_player_on_ship`: if its ship is gone, point it at the current `PlayerShip` (else the player freezes with a stale facing). Any future component that stores a structure `Entity` needs the same treatment.
+
+`request_load_on_start` (PostStartup) auto-loads the save if `save.ron` exists (else the default world stays); the load pipeline then runs on the first `Update` frame. Camera zoom is mode-dependent (`base × CameraZoom`, base = walk/pilot), so `apply_camera` sets a `CameraSnap` flag: `move_camera` snaps (no ease) until `PendingPilot` resolves, so the camera lands on the restored zoom immediately rather than easing from the stale pre-load scale through the wrong (not-yet-re-seated) base. An on-screen **New Game** button (`spawn_new_game_button`/`new_game_button`, top-right) deletes the save and resets to the default world; it (and only it) still uses the `WorldEdit` `SystemParam` bundle for the all-in-one reset. Caveat: the button is plain `bevy_ui` with no pointer-over-UI input capture, so a click also reaches world systems (a stray player-cannon shot / build placement) — add a `PointerOverUi` guard if that matters.
+
+**Debug keys:** F5 save, F9 load (also auto-loads at startup), F7 logs blueprint summaries. **Known fragility:** the on-disk format changed when the chunk framework landed — older flat `save.ron` files won't parse (they're rejected, default world stays). `spawn_root` duplicates the per-kind root setup from the `spawn_*_base` fns; the round-trip relies on `extract_blueprint`/`build_structure` agreeing with how `mount` placed things. Docking (`docked_to`) is still not persisted/re-linked.
+
 ### Other modules
 `world.rs` spawns the world (station, ground) via `WorldPlugin`. `station.rs` builds the station parametrically from `HUB_SIZE`/`ARM_SEGMENTS` (each side filled by `holds_and_docks` or `equipment_bank`, scaling with the hub width — no hard-coded slot indices). `interaction.rs` — `Interactable` + consoles. `camera.rs` — follows player/ship and aligns to the ship in build mode; orthographic zoom eases between `WALK_ZOOM` (on foot, close) and `PILOT_ZOOM` (piloting/build, pulled back), scaled by the scroll-wheel `CameraZoom` multiplier (`scroll_zoom`). `move_camera` eases the actual scale toward the target, so scroll zoom is smooth. `action.rs`/`animation.rs`/`health.rs`/`character.rs` — combat, sprite animation, damage. `enemy.rs` builds an enemy ship through the shared module path.
+
+## Code check (scaling watch-points)
+
+**Planned scope** (what the architecture must eventually carry): trading, mining, a simulated economy, station building, action-packed combat, missions, NPCs that walk around / do tasks on (moving) ships, a skill tree, crafting, and looting with quality + randomization — across a *big* world.
+
+When the user says **"code check"**, review the current code against the risks below (and look for new ones in the same spirit): decisions/implementations that are fine now but will be expensive once the scope above lands. Be honest and specific; cite concrete code.
+
+Tier 1 — foundational (decide before building big systems on top):
+1. **World structure & coordinates** — one `f32` space; precision degrades at large coords. Decide contiguous-space-with-floating-origin vs discrete sectors/systems. Dictates streaming, economy graph, travel.
+2. **Sim vs presentation + activation/LOD** — everything is a live rendered entity (a station is hundreds of child entities). Need a lightweight off-screen data model and "spawn detailed hierarchy only near the player." No sector/streaming concept.
+3. **Persistence / stable IDs** — *largely done* (`src/save.rs` + `build/blueprint.rs`: full structure save/load via blueprints, F5/F9; chunked framework where each feature owns its chunk; see Persistence). Remaining: re-link raw `Entity` cross-refs by `InstanceId` on load (`Target`, `docked_to`, `Seated.ship`) so docking/targeting survive a load; persist non-structure state as it's added (economy, inventory, missions) — now a matter of adding a capture/apply pair in that feature's module; and DRY `spawn_root` against the `spawn_*_base` fns.
+4. **Data-driven content** — `ModuleKind`/`Faction`/turret stats are hardcoded enums + `match`. Items/modules/weapons/recipes/missions want a registry/asset-def pattern; loot needs an item-definition vs item-instance split.
+5. **Faction & reputation** — `Faction{Player,Enemy}` + "`!=` ⇒ hostile". Needs a faction registry + relationship/standing matrix (traders, pirates, neutrals, missions).
+
+Tier 2 — bites during big fights / many NPCs:
+6. **No spatial partitioning** — `select_target`, point-defense, `shot_blocked`/aim-clamp, damage all do global O(n)–O(n²) scans per frame. Use avian `spatial_query` / range/sector culling.
+7. **Projectiles** — regular bullets have **no `Lifetime`** (miss ⇒ fly forever = leak); each is a physics sensor + observer. Add lifetimes, pooling, a cheap non-physics bulk path.
+8. **Targeting/AI placeholder** — `select_target` locks the first opposing *part* forever (no nearest/range/LOS/threat); `fly_enemy_ships` is one routine. Needs a real AI architecture.
+9. **NPCs on moving ships** — player carry is a delicate single-entity hack; many NPCs walking on many moving ships + interior pathfinding likely needs a ship-local interior space.
+10. **Damage pipeline** — computed inline in the bullet observer; `Health` vs `ModuleHealth`/`ShipHealth` are separate. Want structured damage events + mitigation layers (shields/types/resist/crit) and a unified framework.
+
+Tier 3 — compounding cleanups:
+11. **Game states** — no Bevy `States`; everything runs always (menus, pause, docked/map/trading screens, sim pause).
+12. **Input abstraction** — hardcoded scattered `KeyCode`s, conflicts creeping; want an action layer (rebinding, contextual, UI capture).
+13. **UI architecture** — only build text + health bars; trading/inventory/missions/skill tree/crafting are UI-heavy. Pick a strategy.
+14. **Schedule discipline** — recurring Fixed-vs-Update / `GlobalTransform`-lag / `Position` bugs; define explicit `SystemSet`s + documented ordering.
+15. **Tests for pure logic** — extract economy/damage/inventory/loot math into pure, unit-testable functions.
+
+Minor: dev scaffolding still in `main` (`spawn_obstacle`, `display_events`, `PhysicsDebugPlugin`).
 
 ## Conventions
 

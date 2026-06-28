@@ -42,7 +42,7 @@ const AIM_REACH: f32 = 1000.;
 const AIM_SWEEP_STEP: f32 = 0.05;
 
 /// A turret's role. Orthogonal to its [`FireArc`].
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TurretKind {
     /// A regular gun: auto-tracks and shoots enemy ships (see `select_target` /
     /// `fire_turret`).
@@ -59,7 +59,7 @@ pub enum TurretKind {
 
 /// Whether a turret can fire over its own ship. Orthogonal to its [`TurretKind`] —
 /// both cannons and point-defense turrets have an arc.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FireArc {
     /// Mounted high / on a free arc: fires from any angle, even across its own hull.
     OverShip,
@@ -119,6 +119,15 @@ pub struct Turret {
 }
 
 impl Turret {
+    /// The installed weapon's role (for blueprint extraction).
+    pub fn kind(&self) -> TurretKind {
+        self.kind
+    }
+    /// The installed weapon's firing arc (for blueprint extraction).
+    pub fn arc(&self) -> FireArc {
+        self.arc
+    }
+
     pub fn new(fire_rate: f32, velocity: f32, damage: f32, kind: TurretKind, arc: FireArc) -> Self {
         let timer = Timer::from_seconds(fire_rate, TimerMode::Repeating);
         Self {

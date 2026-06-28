@@ -1,9 +1,11 @@
 use avian2d::prelude::*;
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     animation::{Animated, Animations},
     character::Character,
+    save::{InstanceId, SaveFile},
     ship::{GameLayer, PilotSeat, PlayerShip, ShipBase},
 };
 
@@ -180,7 +182,7 @@ pub fn read_player_input(
 /// cockpit module -> ... -> hull), so it stays exact wherever the cockpit is
 /// mounted and avoids transform-propagation lag (it reads local `Transform`s, not
 /// the not-yet-propagated `GlobalTransform`).
-fn resolve_seat_ship(
+pub(crate) fn resolve_seat_ship(
     seat: Entity,
     transforms: &Query<&Transform>,
     parents: &Query<&ChildOf>,
@@ -197,6 +199,94 @@ fn resolve_seat_ship(
         }
         current = parent;
     }
+}
+
+/// After a load, the ship the player was piloting (by `InstanceId`) needs re-seating
+/// once it's rebuilt. The rebuilt ship + its pilot seat are spawned via deferred
+/// commands, so [`apply_pending_pilot`] retries each frame until they exist.
+#[derive(Resource, Default)]
+pub struct PendingPilot(pub Option<u64>);
+
+/// Re-seat the player at the pilot seat of the ship with the pending `InstanceId`
+/// once that rebuilt ship and its seat exist (set by save-load).
+pub fn apply_pending_pilot(
+    mut commands: Commands,
+    mut pending: ResMut<PendingPilot>,
+    players: Query<Entity, With<Player>>,
+    seats: Query<Entity, With<PilotSeat>>,
+    transforms: Query<&Transform>,
+    parents: Query<&ChildOf>,
+    ships: Query<Entity, With<ShipBase>>,
+    instance_ids: Query<&crate::save::InstanceId>,
+) {
+    let Some(want) = pending.0 else {
+        return;
+    };
+    let Ok(player) = players.single() else {
+        return;
+    };
+    for seat in &seats {
+        let Some((ship, ship_local)) = resolve_seat_ship(seat, &transforms, &parents, &ships)
+        else {
+            continue;
+        };
+        if instance_ids.get(ship).map(|id| id.0) == Ok(want) {
+            commands.entity(player).insert(Seated {
+                seat,
+                ship,
+                ship_local,
+            });
+            pending.0 = None;
+            return;
+        }
+    }
+    // The target ship/seat isn't spawned yet (or has no seat); try again next frame.
+}
+
+/// The player's persisted state: world position and, if piloting, the `InstanceId` of
+/// the ship they're seated in (a stable cross-ref, since the live `Entity` won't survive
+/// a load).
+#[derive(Serialize, Deserialize)]
+struct PlayerSave {
+    pos: [f32; 2],
+    piloting: Option<u64>,
+}
+
+/// Save the player chunk (runs in `PersistSet::Capture`, i.e. only while saving).
+pub(crate) fn capture_player(
+    player: Query<(&Position, Option<&Seated>), With<Player>>,
+    instance_ids: Query<&InstanceId>,
+    mut file: ResMut<SaveFile>,
+) {
+    let (pos, piloting) = match player.single() {
+        Ok((pos, seated)) => {
+            let piloting = seated
+                .and_then(|s| instance_ids.get(s.ship).ok())
+                .map(|id| id.0);
+            (pos.0.to_array(), piloting)
+        }
+        Err(_) => ([0., 0.], None),
+    };
+    file.write("player", &PlayerSave { pos, piloting });
+}
+
+/// Restore the player chunk (runs in `PersistSet::Apply`, i.e. only while loading).
+/// Un-seats now (the old ship is gone); if they were piloting, [`apply_pending_pilot`]
+/// re-seats them at the rebuilt ship once it exists.
+pub(crate) fn apply_player(
+    file: Res<SaveFile>,
+    mut commands: Commands,
+    mut player: Query<(Entity, &mut Position), With<Player>>,
+    mut pending: ResMut<PendingPilot>,
+) {
+    let Some(saved) = file.read::<PlayerSave>("player") else {
+        return;
+    };
+    if let Ok((entity, mut pos)) = player.single_mut() {
+        pos.0 = Vec2::from_array(saved.pos);
+        commands.entity(entity).remove::<Seated>();
+    }
+    pending.0 = saved.piloting;
 }
 
 /// Sit down at / stand up from a nearby pilot seat on press of F.
@@ -240,6 +330,25 @@ pub fn toggle_seat(
                 ship: ship_entity,
                 ship_local,
             });
+        }
+    }
+}
+
+/// Keep the player's [`OnShip`] pointing at a live ship. When the referenced ship is
+/// despawned (new game / load replaces all structures), the carry (`drive_player_on_ship`)
+/// would skip the player — freezing movement and facing — so re-link to the player ship.
+/// (The player only ever rides the player ship for now; revisit when boarding others.)
+pub fn keep_player_on_ship(
+    mut players: Query<&mut OnShip, With<Player>>,
+    ships: Query<(), With<ShipBase>>,
+    player_ship: Query<Entity, With<PlayerShip>>,
+) {
+    let Ok(default_ship) = player_ship.single() else {
+        return;
+    };
+    for mut on_ship in &mut players {
+        if !ships.contains(on_ship.ship_entity) {
+            on_ship.ship_entity = default_ship;
         }
     }
 }

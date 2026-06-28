@@ -7,6 +7,8 @@ edition = "2021"
 bevy = "0.19"
 avian2d = "0.7"
 bevy_transform_interpolation = "0.5"
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
 # bevy_rapier2d = "*"
 # avian2d = { git = "https://github.com/Jondolf/avian", branch = "main" } 
 # bevy_ecs_tilemap = "*"

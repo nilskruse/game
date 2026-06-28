@@ -44,6 +44,7 @@ pub fn spawn_space_station(
     let station = commands
         .spawn((
             SpaceStation,
+            crate::save::Origin::Authored("station".to_string()),
             WorldElement,
             RigidBody::Static,
             Transform::from_xyz(position.x, position.y, 0.),

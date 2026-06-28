@@ -10,9 +10,12 @@ use super::{same_dir, HULL, UNIT, WALL};
 /// Airlock door color (sealed bulkhead).
 const DOOR_COLOR: Color = Color::srgb(0.80, 0.30, 0.25);
 
-/// A module that was built onto a body, with what it needs to be deconstructed.
+/// A module that was built onto a body, with what it needs to be deconstructed
+/// and serialized into a blueprint.
 #[derive(Component)]
 pub(crate) struct BuiltModule {
+    /// What this module is (for blueprint extraction).
+    pub(crate) kind: ModuleKind,
     /// Attach points on the parent body this module occupies (freed on removal).
     pub(crate) points: Vec<Entity>,
     /// Doorway panels this module opened (disabled), to re-seal on removal.
@@ -221,6 +224,7 @@ pub(crate) fn mount(
     let (hp, armor) = kind.durability();
     commands.entity(mounted.module).insert((
         BuiltModule {
+            kind,
             points: occupied,
             panels: opened,
             size: footprint.world_size(direction),

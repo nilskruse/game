@@ -26,6 +26,7 @@ pub(crate) struct AttachPoint {
 
 /// One attachment slot created by [`build_buildable_side`], in slot order along
 /// the side. Lets callers pre-occupy a slot and mount something on it.
+#[derive(Clone, Copy)]
 pub struct AttachSlot {
     pub entity: Entity,
     pub local: Vec2,

@@ -131,6 +131,7 @@ pub fn spawn_player_ship_base(
     let ship_base = commands
         .spawn((
             PlayerShip,
+            crate::save::Origin::Authored("player_ship".to_string()),
             Propagate(InFaction(Faction::Player)),
             ShipBase,
             // The hull is the engineering module: tough, well-armored. Its health

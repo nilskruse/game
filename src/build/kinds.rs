@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use super::UNIT;
 
@@ -30,7 +31,7 @@ impl Footprint {
 }
 
 /// The kinds of module that can be built onto a structure.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) enum ModuleKind {
     Cargo,
     Engine,

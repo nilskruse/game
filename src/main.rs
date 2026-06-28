@@ -19,6 +19,7 @@ pub mod health;
 pub mod interaction;
 pub mod movement;
 pub mod player;
+pub mod save;
 pub mod ship;
 pub mod station;
 pub mod world;
@@ -31,13 +32,16 @@ use character::Character;
 use movement::{control_player_ship, drive_ships};
 
 use crate::{
-    camera::{move_camera, scroll_zoom, spawn_camera, CameraZoom},
+    camera::{apply_camera, capture_camera, move_camera, scroll_zoom, spawn_camera, CameraZoom},
     docking::{advance_docking, toggle_dock, update_dock_indicators},
     enemy::{fly_enemy_ships, spawn_enemy, spawn_enemy_ship},
     faction::InFaction,
     interaction::interact,
     movement::apply_movement_damping,
-    player::{correct_player_carry, drive_player_on_ship, read_player_input, toggle_seat},
+    player::{
+        apply_pending_pilot, apply_player, capture_player, correct_player_carry,
+        drive_player_on_ship, keep_player_on_ship, read_player_input, toggle_seat, PendingPilot,
+    },
     ship::turret::{
         fire_turret, player_weapons, point_defense, rotate_turret, select_target, update_pd_slugs,
     },
@@ -116,7 +120,7 @@ impl Plugin for Game {
         app.add_systems(FixedUpdate, advance_docking);
         app.add_systems(
             FixedUpdate,
-            (read_player_input, drive_player_on_ship).chain(),
+            (keep_player_on_ship, read_player_input, drive_player_on_ship).chain(),
         );
         // After the solve but before transform writeback, fix the player up
         // against the ship's *actual* motion this step.
@@ -138,7 +142,62 @@ impl Plugin for Game {
             (effects::expire_lifetimes, effects::animate_hit_sparks),
         );
         app.init_resource::<CameraZoom>();
+        app.init_resource::<camera::CameraSnap>();
         app.add_systems(Update, (scroll_zoom, move_camera).chain());
+        // Persistence: a save/load framework where each feature owns its own chunk.
+        // Capture systems write their chunk (in `PersistSet::Capture`, only while
+        // saving); apply systems restore it (in `PersistSet::Apply`, only while
+        // loading). Adding persistence for a new system = register its capture/apply in
+        // these sets — no central save struct to edit. See `save.rs`.
+        app.init_resource::<save::NextInstanceId>();
+        app.init_resource::<save::SaveFile>();
+        app.init_resource::<save::PersistOp>();
+        app.init_resource::<PendingPilot>();
+        app.add_systems(Startup, save::spawn_new_game_button);
+        app.add_systems(PostStartup, save::request_load_on_start);
+        app.configure_sets(
+            Update,
+            (
+                save::PersistSet::Capture.run_if(save::saving),
+                save::PersistSet::Apply.run_if(save::loading),
+            ),
+        );
+        app.add_systems(
+            Update,
+            (
+                save::assign_instance_ids,
+                save::new_game_button,
+                apply_pending_pilot,
+            ),
+        );
+        // Save pipeline: request (F5) -> features capture their chunks -> write file.
+        app.add_systems(
+            Update,
+            (
+                save::request_save.before(save::PersistSet::Capture),
+                (save::capture_structures, capture_camera, capture_player)
+                    .in_set(save::PersistSet::Capture),
+                save::commit_save
+                    .after(save::PersistSet::Capture)
+                    .run_if(save::saving),
+            ),
+        );
+        // Load pipeline: request (F9 / startup) -> rebuild structures -> features apply
+        // their chunks -> finish.
+        app.add_systems(
+            Update,
+            (
+                save::request_load.before(save::load_structures),
+                save::load_structures
+                    .run_if(save::loading)
+                    .before(save::PersistSet::Apply),
+                (apply_camera, apply_player).in_set(save::PersistSet::Apply),
+                save::commit_load
+                    .after(save::PersistSet::Apply)
+                    .run_if(save::loading),
+            ),
+        );
+        app.add_systems(Update, build::dump_blueprints);
         app.add_systems(Update, movement::animate_thrusters);
         app.add_systems(
             RunFixedMainLoop,

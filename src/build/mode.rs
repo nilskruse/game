@@ -729,6 +729,7 @@ pub(crate) fn place_module(
     let (hp, armor) = kind.durability();
     commands.entity(module).insert((
         BuiltModule {
+            kind,
             points: resolved.covered.clone(),
             panels: opened,
             size: footprint.world_size(resolved.direction),

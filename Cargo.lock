@@ -2822,6 +2822,8 @@ dependencies = [
  "avian2d",
  "bevy",
  "bevy_transform_interpolation",
+ "ron",
+ "serde",
 ]
 
 [[package]]

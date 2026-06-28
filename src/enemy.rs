@@ -66,88 +66,68 @@ pub fn spawn_enemy(
         .observe(health::on_health_expired);
 }
 
+/// Startup system: spawn the authored enemy ship.
 pub fn spawn_enemy_ship(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    // A size-3 hull like the player's, with a flight loadout so the AI can actually
-    // maneuver: a main engine for forward thrust and a pair of off-center
-    // maneuvering thrusters for reverse, strafing and rotation. Everything is built
-    // through the shared module path, so these are the same modules you can build.
+    build_enemy_ship(&mut commands, &mut meshes, &mut materials);
+}
+
+/// Build the authored enemy ship (callable from startup and from save-load content
+/// injection). A size-3 hull with a flight loadout so the AI can actually maneuver:
+/// a main engine for forward thrust and a pair of off-center maneuvering thrusters
+/// for reverse, strafing and rotation. Built through the shared module path.
+pub(crate) fn build_enemy_ship(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
     let ship_rectangle = Rectangle::new(150., 150.);
-    let ship_base = spawn_enemy_ship_base(
-        ship_rectangle,
-        commands.reborrow(),
-        &mut meshes,
-        &mut materials,
-    );
+    let ship_base = spawn_enemy_ship_base(ship_rectangle, commands.reborrow(), meshes, materials);
     let half = ship_rectangle.half_size;
     const MID: usize = 1;
 
     // Bottom: main engine (forward thrust, +Y).
-    let bottom = build_buildable_side(
-        &mut commands,
-        ship_base,
-        half,
-        3,
-        Vec2::NEG_Y,
-        &mut meshes,
-        &mut materials,
-    );
+    let bottom = build_buildable_side(commands, ship_base, half, 3, Vec2::NEG_Y, meshes, materials);
     mount(
-        &mut commands,
+        commands,
         ship_base,
         &[&bottom[MID]],
         Vec2::NEG_Y,
         ModuleKind::Engine,
-        &mut meshes,
-        &mut materials,
+        meshes,
+        materials,
     );
 
     // Top corners: maneuvering thrusters (reverse / strafe / rotation), off-center so
     // they can spin the ship.
-    let top = build_buildable_side(
-        &mut commands,
-        ship_base,
-        half,
-        3,
-        Vec2::Y,
-        &mut meshes,
-        &mut materials,
-    );
+    let top = build_buildable_side(commands, ship_base, half, 3, Vec2::Y, meshes, materials);
     for corner in [&top[0], &top[2]] {
         mount(
-            &mut commands,
+            commands,
             ship_base,
             &[corner],
             Vec2::Y,
             ModuleKind::Thruster,
-            &mut meshes,
-            &mut materials,
+            meshes,
+            materials,
         );
     }
 
     // Right: a turret. It inherits the Enemy faction via hierarchy propagation, so it
     // targets and fires on the player on its own.
-    let right = build_buildable_side(
-        &mut commands,
-        ship_base,
-        half,
-        3,
-        Vec2::X,
-        &mut meshes,
-        &mut materials,
-    );
+    let right = build_buildable_side(commands, ship_base, half, 3, Vec2::X, meshes, materials);
     mount_preplaced_turret(
-        &mut commands,
+        commands,
         ship_base,
         &right[MID],
         Vec2::X,
         crate::ship::turret::TurretKind::Cannon,
         crate::ship::turret::FireArc::OverShip,
-        &mut meshes,
-        &mut materials,
+        meshes,
+        materials,
     );
 }
 
@@ -160,6 +140,7 @@ pub fn spawn_enemy_ship_base(
     let ship_base = commands
         .spawn((
             ShipBase,
+            crate::save::Origin::Authored("enemy_ship".to_string()),
             ShipAi { engage_range: 550. },
             // Hull = engineering module; its health feeds the ship total pool.
             crate::health::ModuleHealth::new(300., 10.),
