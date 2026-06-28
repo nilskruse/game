@@ -39,6 +39,7 @@ impl Plugin for BuildPlugin {
                 (
                     mode::toggle_build_mode,
                     mode::select_module,
+                    mode::rotate_module,
                     mode::update_ghost,
                     mode::highlight_attach_points,
                     mode::place_module,

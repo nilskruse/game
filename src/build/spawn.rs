@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use crate::ship::GameLayer;
 
 use super::attach::{build_buildable_side, AttachPoint, AttachSlot};
-use super::kinds::ModuleKind;
+use super::kinds::{Footprint, ModuleKind};
 use super::{same_dir, HULL, UNIT, WALL};
 
 /// Airlock door color (sealed bulkhead).
@@ -17,8 +17,8 @@ pub(crate) struct BuiltModule {
     pub(crate) points: Vec<Entity>,
     /// Doorway panels this module opened (disabled), to re-seal on removal.
     pub(crate) panels: Vec<Entity>,
-    /// Square footprint side length, for cursor hit-testing during removal.
-    pub(crate) extent: f32,
+    /// Axis-aligned footprint size (world units), for cursor hit-testing on removal.
+    pub(crate) size: Vec2,
 }
 
 /// A barrier on a docking airlock that opens when the airlock's `port` docks: the
@@ -49,16 +49,18 @@ pub(crate) fn update_airlock_doors(
     }
 }
 
-/// Spawn a module of `kind` as a child of `body`. `edge` is the body-local
-/// midpoint of the covered attach points (on the hull edge); `direction` points
-/// outward. Dispatches on kind: docking port (thin sensor collar at the edge),
-/// walkable room, plain solid block, or a solid block with a turret on top.
+/// Spawn a module of `kind` with the given `footprint` as a child of `body`.
+/// `edge` is the body-local midpoint of the covered attach points (on the hull
+/// edge); `direction` points outward. Dispatches on kind: docking port (thin
+/// sensor collar at the edge), walkable room, plain solid block, or a solid block
+/// with a turret on top.
 pub(crate) fn spawn_module_at(
     commands: &mut Commands,
     body: Entity,
     edge: Vec2,
     direction: Vec2,
     kind: ModuleKind,
+    footprint: Footprint,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
@@ -66,13 +68,13 @@ pub(crate) fn spawn_module_at(
         return spawn_dock_module(commands, body, edge, direction, meshes, materials);
     }
 
-    // Square modules center half their depth outside the edge.
-    let center = edge + direction * (kind.extent() / 2.);
+    // A module centers half its depth outside the edge.
+    let center = edge + direction * (footprint.depth as f32 * UNIT / 2.);
     if kind.walkable() {
-        return spawn_module_room(commands, body, center, direction, kind, meshes, materials);
+        return spawn_module_room(commands, body, center, direction, kind, footprint, meshes, materials);
     }
 
-    let module = spawn_solid_module(commands, body, center, kind, meshes, materials);
+    let module = spawn_solid_module(commands, body, center, direction, kind, footprint, meshes, materials);
     if kind.mounts_turret() {
         // Faction is inherited from the hull via hierarchy propagation, so the
         // turret picks up the player faction just like the old hardcoded one.
@@ -95,6 +97,7 @@ fn mount_preplaced(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
+    let footprint = kind.footprint();
     let mut sum = Vec2::ZERO;
     let mut opened = Vec::new();
     let mut occupied = Vec::new();
@@ -116,11 +119,11 @@ fn mount_preplaced(
         occupied.push(slot.entity);
     }
     let edge = sum / slots.len() as f32;
-    let module = spawn_module_at(commands, body, edge, direction, kind, meshes, materials);
+    let module = spawn_module_at(commands, body, edge, direction, kind, footprint, meshes, materials);
     commands.entity(module).insert(BuiltModule {
         points: occupied,
         panels: opened,
-        extent: kind.extent(),
+        size: footprint.world_size(direction),
     });
 }
 
@@ -154,12 +157,14 @@ fn spawn_solid_module(
     commands: &mut Commands,
     body: Entity,
     center: Vec2,
+    direction: Vec2,
     kind: ModuleKind,
+    footprint: Footprint,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    let extent = kind.extent();
-    let rect = Rectangle::new(extent, extent);
+    let size = footprint.world_size(direction);
+    let rect = Rectangle::new(size.x, size.y);
     commands
         .spawn((
             ChildOf(body),
@@ -281,19 +286,21 @@ pub fn spawn_dock_module(
 
 /// Spawn a walkable module room as a child of `body` at body-local `center`. Its
 /// side facing back toward the body (normal `-direction`) is left fully open so it
-/// connects through the body's doorways; its other three sides are buildable, so
-/// the room can be extended further.
+/// connects through the body's doorways. The opposite (outward) end is always
+/// buildable so the room can be extended further. The two long sides are buildable
+/// for a square room, but solid walls for an elongated one (e.g. a hallway).
 fn spawn_module_room(
     commands: &mut Commands,
     body: Entity,
     center: Vec2,
     direction: Vec2,
     kind: ModuleKind,
+    footprint: Footprint,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    let size = kind.size_units();
-    let extent = kind.extent();
+    let size = footprint.world_size(direction);
+    let half = size / 2.;
     let module = commands
         .spawn((
             ChildOf(body),
@@ -303,7 +310,7 @@ fn spawn_module_room(
         .id();
 
     // Floor.
-    let floor = Rectangle::new(extent - WALL, extent - WALL);
+    let floor = Rectangle::new(size.x - WALL, size.y - WALL);
     commands.spawn((
         ChildOf(module),
         Transform::from_xyz(0., 0., -0.5),
@@ -311,13 +318,21 @@ fn spawn_module_room(
         MeshMaterial2d(materials.add(kind.color())),
     ));
 
-    // Buildable walls on every side except the open one facing the parent body.
-    let half = Vec2::splat(extent / 2.);
     for normal in [Vec2::Y, Vec2::NEG_Y, Vec2::X, Vec2::NEG_X] {
         if same_dir(normal, -direction) {
+            // Open side facing the parent body.
             continue;
         }
-        build_buildable_side(commands, module, half, size, normal, meshes, materials);
+        if same_dir(normal, direction) {
+            // Outward end: always buildable, exposing `width` attach points.
+            build_buildable_side(commands, module, half, footprint.width, normal, meshes, materials);
+        } else if footprint.is_square() {
+            // Long sides of a square room are buildable too (exposing `depth`).
+            build_buildable_side(commands, module, half, footprint.depth, normal, meshes, materials);
+        } else {
+            // Long sides of an elongated room are solid walls.
+            spawn_solid_wall(commands, module, half, normal, meshes, materials);
+        }
     }
 
     // Structural collider (default layer, like the hull) so the room is solid
@@ -325,8 +340,40 @@ fn spawn_module_room(
     commands.spawn((
         ChildOf(module),
         Transform::from_xyz(0., 0., 0.),
-        Collider::from(Rectangle::new(extent, extent)),
+        Collider::from(Rectangle::new(size.x, size.y)),
     ));
 
     module
+}
+
+/// Spawn a single solid wall covering one full side of a module (half-extents
+/// `half`), with outward `normal`. Used for the long sides of elongated rooms.
+fn spawn_solid_wall(
+    commands: &mut Commands,
+    module: Entity,
+    half: Vec2,
+    normal: Vec2,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    // The side runs along x when its outward normal is vertical.
+    let horizontal = normal.x == 0.0;
+    let l = if horizontal { half.x } else { half.y };
+    let perp = (if horizontal { half.y } else { half.x }) - WALL / 2.;
+    let sign = if horizontal { normal.y.signum() } else { normal.x.signum() };
+    let base_perp = sign * perp;
+    let (wsize, wpos) = if horizontal {
+        (Vec2::new(2. * l, WALL), Vec2::new(0., base_perp))
+    } else {
+        (Vec2::new(WALL, 2. * l), Vec2::new(base_perp, 0.))
+    };
+    let rect = Rectangle::new(wsize.x, wsize.y);
+    commands.spawn((
+        ChildOf(module),
+        Collider::from(rect),
+        Transform::from_xyz(wpos.x, wpos.y, 0.),
+        Mesh2d(meshes.add(rect)),
+        MeshMaterial2d(materials.add(HULL)),
+        CollisionLayers::new(GameLayer::Walls, [GameLayer::Player, GameLayer::Default]),
+    ));
 }
