@@ -126,45 +126,58 @@ pub fn toggle_dock(
         })
         .collect();
 
-    let Some(ship_port) = snapshots.iter().find(|p| p.structure == ship_entity) else {
+    // All of the ship's own ports (a ship can carry several docks).
+    let ship_ports: Vec<&PortSnapshot> = snapshots
+        .iter()
+        .filter(|p| p.structure == ship_entity)
+        .collect();
+    if ship_ports.is_empty() {
         return;
-    };
+    }
 
-    // Already docked -> undock and bail.
-    if let Some(other) = ship_port.docked_to {
-        if let Ok((_, mut port, _)) = ports.get_mut(ship_port.entity) {
-            port.docked_to = None;
-        }
-        if let Ok((_, mut port, _)) = ports.get_mut(other) {
-            port.docked_to = None;
+    // Already docked on any port -> release every latched port and bail.
+    let latched: Vec<(Entity, Entity)> = ship_ports
+        .iter()
+        .filter_map(|p| p.docked_to.map(|other| (p.entity, other)))
+        .collect();
+    if !latched.is_empty() {
+        for (ours, other) in latched {
+            if let Ok((_, mut port, _)) = ports.get_mut(ours) {
+                port.docked_to = None;
+            }
+            if let Ok((_, mut port, _)) = ports.get_mut(other) {
+                port.docked_to = None;
+            }
         }
         commands.entity(ship_entity).remove::<Docked>();
         return;
     }
 
-    // Find the nearest free port on another structure that we're lined up with:
-    // in range, and both ports facing roughly toward each other.
+    // Over every pairing of one of our free ports with a free port on another
+    // structure, find the nearest that's lined up: in range and facing each other.
     const RANGE: f32 = 130.0;
-    let mut best: Option<(&PortSnapshot, f32)> = None;
-    for cand in &snapshots {
-        if cand.structure == ship_entity || cand.docked_to.is_some() {
-            continue;
-        }
-        let to_cand = cand.position - ship_port.position;
-        let dist = to_cand.length();
-        if dist > RANGE || dist < 1e-3 {
-            continue;
-        }
-        let dir = to_cand / dist;
-        // Our port must face toward the candidate and vice-versa.
-        if ship_port.normal.dot(dir) <= 0.0 || cand.normal.dot(-dir) <= 0.0 {
-            continue;
-        }
-        if best.map_or(true, |(_, b)| dist < b) {
-            best = Some((cand, dist));
+    let mut best: Option<(&PortSnapshot, &PortSnapshot, f32)> = None;
+    for &ship_port in &ship_ports {
+        for cand in &snapshots {
+            if cand.structure == ship_entity || cand.docked_to.is_some() {
+                continue;
+            }
+            let to_cand = cand.position - ship_port.position;
+            let dist = to_cand.length();
+            if dist > RANGE || dist < 1e-3 {
+                continue;
+            }
+            let dir = to_cand / dist;
+            // Our port must face toward the candidate and vice-versa.
+            if ship_port.normal.dot(dir) <= 0.0 || cand.normal.dot(-dir) <= 0.0 {
+                continue;
+            }
+            if best.map_or(true, |(_, _, b)| dist < b) {
+                best = Some((ship_port, cand, dist));
+            }
         }
     }
-    let Some((cand, _)) = best else {
+    let Some((ship_port, cand, _)) = best else {
         return;
     };
 
