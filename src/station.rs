@@ -12,9 +12,13 @@ pub struct SpaceStation;
 const HUB_FLOOR: Color = Color::srgb(0.30, 0.34, 0.42);
 
 /// Build the player-accessible station entirely out of standard modules — the same
-/// kinds you can build onto a ship. A square central hub (a buildable body, like
-/// the ship base) has rooms, corridors, docking ports and equipment mounted onto
-/// its sides through the shared `mount` path, and rooms chained onto those.
+/// kinds you can build onto a ship. A large central hub (a buildable body, like the
+/// ship base) has rooms, corridors, docking ports and equipment mounted onto its
+/// sides through the shared `mount` path, and modules chained onto those.
+///
+/// It dwarfs the ship: a 6-wide hub with rows of cargo holds, long docking arms,
+/// and a bank of equipment — but built at the same `UNIT` scale, so a room is still
+/// a room you walk through.
 ///
 /// Built hierarchically (station hub -> module -> walls), mirroring the ship.
 pub fn spawn_space_station(
@@ -23,10 +27,10 @@ pub fn spawn_space_station(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    // Central hub: a size-3 square body, the backbone everything mounts onto. Like
+    // Central hub: a size-6 square body, the backbone everything mounts onto. Like
     // the ship base, its full-square collider blocks other hulls (not the player),
-    // and its four buildable sides enclose a walkable room with doorways.
-    let hub_size = 3u32;
+    // and its buildable sides enclose a walkable room with doorways.
+    let hub_size = 6u32;
     let extent = hub_size as f32 * UNIT;
     let half = Vec2::splat(extent / 2.);
     let rect = Rectangle::new(extent, extent);
@@ -80,93 +84,129 @@ pub fn spawn_space_station(
         materials,
     );
 
-    // North: a corridor up to a docking port, on the centered slot.
-    let corridor = mount(
+    // North: a central cargo hold flanked by two long docking arms.
+    cargo(
         &mut commands,
         station,
-        &[&up[1]],
+        &up[2],
+        &up[3],
         Vec2::Y,
-        ModuleKind::Hallway,
         meshes,
         materials,
     );
-    mount_far(
+    corridor_dock(
         &mut commands,
-        &corridor,
+        station,
+        &up[0],
         Vec2::Y,
-        ModuleKind::Dock,
+        3,
+        meshes,
+        materials,
+    );
+    corridor_dock(
+        &mut commands,
+        station,
+        &up[5],
+        Vec2::Y,
+        3,
         meshes,
         materials,
     );
 
-    // South: a 2x2 cargo hold, with a corridor + second docking port chained off
-    // its far end (so the station, like a ship, can carry several docks).
-    let hold = mount(
+    // South: a bank of three cargo holds, with a docking arm chained off the middle.
+    cargo(
         &mut commands,
         station,
-        &[&down[0], &down[1]],
+        &down[0],
+        &down[1],
         Vec2::NEG_Y,
-        ModuleKind::Cargo,
         meshes,
         materials,
     );
-    let corridor2 = mount_far(
+    let mid_hold = cargo(
         &mut commands,
-        &hold,
+        station,
+        &down[2],
+        &down[3],
         Vec2::NEG_Y,
-        ModuleKind::Hallway,
         meshes,
         materials,
     );
-    mount_far(
+    cargo(
         &mut commands,
-        &corridor2,
+        station,
+        &down[4],
+        &down[5],
         Vec2::NEG_Y,
-        ModuleKind::Dock,
         meshes,
         materials,
     );
+    chain_corridor_dock(&mut commands, &mid_hold, Vec2::NEG_Y, 2, meshes, materials);
 
-    // West: a 2x2 crew lounge.
-    mount(
+    // West: two crew lounges and a docking arm between them.
+    cargo(
         &mut commands,
         station,
-        &[&left[0], &left[1]],
+        &left[0],
+        &left[1],
         Vec2::NEG_X,
-        ModuleKind::Cargo,
+        meshes,
+        materials,
+    );
+    cargo(
+        &mut commands,
+        station,
+        &left[4],
+        &left[5],
+        Vec2::NEG_X,
+        meshes,
+        materials,
+    );
+    corridor_dock(
+        &mut commands,
+        station,
+        &left[2],
+        Vec2::NEG_X,
+        2,
         meshes,
         materials,
     );
 
-    // East: external equipment — an engine and a sensor block (solid modules
-    // fronted by access consoles in the hub), and a defense turret between them.
-    mount(
-        &mut commands,
-        station,
-        &[&right[0]],
-        Vec2::X,
-        ModuleKind::Engine,
-        meshes,
-        materials,
-    );
-    mount(
-        &mut commands,
-        station,
-        &[&right[1]],
-        Vec2::X,
-        ModuleKind::Turret,
-        meshes,
-        materials,
-    );
-    mount(
-        &mut commands,
-        station,
-        &[&right[2]],
-        Vec2::X,
-        ModuleKind::Sensor,
-        meshes,
-        materials,
-    );
+    // East: an equipment bank — engines, turrets and sensors (solid modules) — with
+    // access consoles in the hub fronting the engine and sensor blocks.
+    for slot in [&right[0], &right[1]] {
+        mount(
+            &mut commands,
+            station,
+            &[slot],
+            Vec2::X,
+            ModuleKind::Engine,
+            meshes,
+            materials,
+        );
+    }
+    for slot in [&right[2], &right[3]] {
+        mount(
+            &mut commands,
+            station,
+            &[slot],
+            Vec2::X,
+            ModuleKind::Turret,
+            meshes,
+            materials,
+        );
+    }
+    for slot in [&right[4], &right[5]] {
+        mount(
+            &mut commands,
+            station,
+            &[slot],
+            Vec2::X,
+            ModuleKind::Sensor,
+            meshes,
+            materials,
+        );
+    }
     let edge = half.x - 20.;
     spawn_console(
         station,
@@ -178,14 +218,104 @@ pub fn spawn_space_station(
     );
     spawn_console(
         station,
-        Vec2::new(edge, right[2].local.y),
+        Vec2::new(edge, right[5].local.y),
         "Sensors",
         commands.reborrow(),
         meshes,
         materials,
     );
 
+    // Engineering console in the hub: the hub is the station's engineering module;
+    // interacting with this (E) opens build mode for the station.
+    crate::build::spawn_build_console(
+        station,
+        Vec2::new(0., -40.),
+        &mut commands,
+        meshes,
+        materials,
+    );
+
     station
+}
+
+/// Mount a 2x2 cargo room across two adjacent slots on `body`, extending `dir`.
+fn cargo(
+    commands: &mut Commands,
+    body: Entity,
+    a: &AttachSlot,
+    b: &AttachSlot,
+    dir: Vec2,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) -> Mounted {
+    mount(
+        commands,
+        body,
+        &[a, b],
+        dir,
+        ModuleKind::Cargo,
+        meshes,
+        materials,
+    )
+}
+
+/// A docking arm off `body`'s `slot`: `segments` hallways in a row, capped by a
+/// docking port — a long corridor reaching out for ships to mate with.
+fn corridor_dock(
+    commands: &mut Commands,
+    body: Entity,
+    slot: &AttachSlot,
+    dir: Vec2,
+    segments: u32,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    let first = mount(
+        commands,
+        body,
+        &[slot],
+        dir,
+        ModuleKind::Hallway,
+        meshes,
+        materials,
+    );
+    chain_corridor(commands, first, dir, segments - 1, meshes, materials);
+}
+
+/// As [`corridor_dock`], but chained onto an already-mounted module's far side.
+fn chain_corridor_dock(
+    commands: &mut Commands,
+    parent: &Mounted,
+    dir: Vec2,
+    segments: u32,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    let first = mount_far(
+        commands,
+        parent,
+        dir,
+        ModuleKind::Hallway,
+        meshes,
+        materials,
+    );
+    chain_corridor(commands, first, dir, segments - 1, meshes, materials);
+}
+
+/// Extend `from` with `more` further hallways, then cap the end with a dock.
+fn chain_corridor(
+    commands: &mut Commands,
+    from: Mounted,
+    dir: Vec2,
+    more: u32,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    let mut tail = from;
+    for _ in 0..more {
+        tail = mount_far(commands, &tail, dir, ModuleKind::Hallway, meshes, materials);
+    }
+    mount_far(commands, &tail, dir, ModuleKind::Dock, meshes, materials);
 }
 
 /// Mount a module of `kind` onto the far (`direction`) side of an already-mounted

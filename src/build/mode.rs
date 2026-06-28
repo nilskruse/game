@@ -1,5 +1,8 @@
 use avian2d::prelude::*;
+use bevy::math::Affine3A;
 use bevy::prelude::*;
+
+use crate::interaction::{Interactable, Interacted};
 
 use super::attach::AttachPoint;
 use super::kinds::{Footprint, ModuleKind};
@@ -30,6 +33,10 @@ fn snap_query(cursor: Vec2, facing: Vec2, depth_units: u32, cam_rot: Quat) -> Ve
 #[derive(Resource)]
 pub struct BuildMode {
     pub active: bool,
+    /// The structure (ship/station root) currently being edited. Set when entering
+    /// build mode via an engineering console; only this structure's attach points
+    /// are active. `None` when not building.
+    structure: Option<Entity>,
     selected: Option<ModuleKind>,
     /// Body-local outward direction the selected module extends in, set manually
     /// with `R`. Always one of +Y / +X / -Y / -X. The module attaches only to a
@@ -43,6 +50,7 @@ impl Default for BuildMode {
     fn default() -> Self {
         Self {
             active: false,
+            structure: None,
             selected: None,
             facing: Vec2::Y,
             ghost: None,
@@ -51,10 +59,129 @@ impl Default for BuildMode {
 }
 
 impl BuildMode {
+    /// The structure (ship/station root) currently being edited, if in build mode.
+    pub fn structure(&self) -> Option<Entity> {
+        self.structure
+    }
+
     /// The footprint of the selected module, if any.
     fn footprint(&self) -> Option<Footprint> {
         self.selected.map(ModuleKind::footprint)
     }
+}
+
+/// A console on an engineering module. Interacting with it (E) enters build mode
+/// scoped to the `structure` (ship/station root) it belongs to.
+#[derive(Component)]
+pub(crate) struct BuildConsole {
+    structure: Entity,
+}
+
+/// Spawn an engineering build console as a child of structure root `root`, at
+/// body-local `position`. The engineering module is every structure's initial
+/// module; this console is how the crew opens build mode for that structure.
+pub fn spawn_build_console(
+    root: Entity,
+    position: Vec2,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) -> Entity {
+    let panel = Rectangle::new(26., 14.);
+    commands
+        .spawn((
+            Interactable {
+                label: "Engineering".to_string(),
+                range: 45.,
+            },
+            BuildConsole { structure: root },
+            ChildOf(root),
+            Transform::from_xyz(position.x, position.y, 0.6),
+            Mesh2d(meshes.add(panel)),
+            MeshMaterial2d(materials.add(Color::srgb(0.95, 0.65, 0.20))),
+        ))
+        .observe(enter_build_mode)
+        .id()
+}
+
+/// Observer: toggle build mode for the console's structure when interacted with —
+/// E opens it, E again leaves (as do B and Esc, see [`exit_build_mode`]).
+fn enter_build_mode(
+    event: On<Interacted>,
+    consoles: Query<&BuildConsole>,
+    mut build: ResMut<BuildMode>,
+    mut commands: Commands,
+) {
+    let Ok(console) = consoles.get(event.0) else {
+        return;
+    };
+    if build.active && build.structure == Some(console.structure) {
+        // Already building this structure — leave.
+        build.active = false;
+        build.structure = None;
+        clear_selection(&mut build, &mut commands);
+    } else {
+        build.active = true;
+        build.structure = Some(console.structure);
+    }
+}
+
+/// Walk up the `ChildOf` chain to the structure root (ship hull / station root).
+fn structure_root(entity: Entity, parents: &Query<&ChildOf>) -> Entity {
+    let mut current = entity;
+    while let Ok(child_of) = parents.get(current) {
+        current = child_of.parent();
+    }
+    current
+}
+
+/// Footprints of `structure`'s existing modules, in the structure's local frame —
+/// axis-aligned, since modules aren't rotated relative to their structure. Each is
+/// `(center, half_size)`. `inv` maps world space into that local frame. Used to
+/// block attach points whose neighbouring cell is already occupied.
+fn structure_footprints(
+    structure: Entity,
+    inv: Affine3A,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    parents: &Query<&ChildOf>,
+) -> Vec<(Vec2, Vec2)> {
+    modules
+        .iter()
+        .filter(|(e, ..)| structure_root(*e, parents) == structure)
+        .map(|(_, m, gt)| (inv.transform_point3(gt.translation()).xy(), m.size / 2.))
+        .collect()
+}
+
+/// The world->structure-local transform and the structure's module footprints,
+/// for blocking attach points. Returns `(None, empty)` when not building.
+fn structure_blocking(
+    structure: Option<Entity>,
+    bodies: &Query<&GlobalTransform>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    parents: &Query<&ChildOf>,
+) -> (Option<Affine3A>, Vec<(Vec2, Vec2)>) {
+    let Some(structure) = structure else {
+        return (None, Vec::new());
+    };
+    let Ok(gt) = bodies.get(structure) else {
+        return (None, Vec::new());
+    };
+    let inv = gt.affine().inverse();
+    (
+        Some(inv),
+        structure_footprints(structure, inv, modules, parents),
+    )
+}
+
+/// Whether the cell just outside an attach point (world position `world`, facing
+/// body-local `dir`) is already occupied by one of `footprints` — i.e. a module
+/// already sits where one attached here would extend. `inv` maps world space into
+/// the structure's local frame (where both the point and the footprints live).
+fn cell_blocked(world: Vec2, dir: Vec2, inv: Affine3A, footprints: &[(Vec2, Vec2)]) -> bool {
+    let cell = inv.transform_point3(world.extend(0.)).xy() + dir * (UNIT / 2.);
+    footprints
+        .iter()
+        .any(|(c, h)| (cell.x - c.x).abs() < h.x - 0.5 && (cell.y - c.y).abs() < h.y - 0.5)
 }
 
 /// The translucent preview that follows the cursor while placing.
@@ -65,16 +192,19 @@ pub(crate) struct Ghost;
 #[derive(Component)]
 pub(crate) struct BuildText;
 
-pub(crate) fn toggle_build_mode(
+/// Exit build mode with `B` or `Escape`. Entering build mode is done by interacting
+/// (E) with an engineering console — see [`spawn_build_console`].
+pub(crate) fn exit_build_mode(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut build: ResMut<BuildMode>,
     mut commands: Commands,
 ) {
-    if !keyboard.just_pressed(KeyCode::KeyB) {
+    if !build.active {
         return;
     }
-    build.active = !build.active;
-    if !build.active {
+    if keyboard.just_pressed(KeyCode::KeyB) || keyboard.just_pressed(KeyCode::Escape) {
+        build.active = false;
+        build.structure = None;
         clear_selection(&mut build, &mut commands);
     }
 }
@@ -101,6 +231,8 @@ pub(crate) fn select_module(
         ModuleKind::Dock
     } else if keyboard.just_pressed(KeyCode::Digit6) {
         ModuleKind::Hallway
+    } else if keyboard.just_pressed(KeyCode::Digit7) {
+        ModuleKind::Cockpit
     } else {
         return;
     };
@@ -190,6 +322,8 @@ pub(crate) fn update_ghost(
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     points: Query<(Entity, &AttachPoint, &GlobalTransform)>,
     bodies: Query<&GlobalTransform>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    parents: Query<&ChildOf>,
     mut ghosts: Query<&mut Transform, With<Ghost>>,
 ) {
     if !build.active {
@@ -207,18 +341,25 @@ pub(crate) fn update_ghost(
     let cam_rot = cam_rotation(&cameras);
     let query = snap_query(cursor, facing, footprint.depth, cam_rot);
 
-    // Resolve where the module would attach (only to a side it faces) and snap the
-    // ghost there: at the module's center, rotated so its outward edge points out.
+    // Resolve where the module would attach (only to a side it faces, and only on
+    // the structure being edited) and snap the ghost there: at the module's center,
+    // rotated so its outward edge points out.
+    let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules, &parents);
     let infos: Vec<PointInfo> = points
         .iter()
-        .map(|(entity, point, gt)| PointInfo {
-            entity,
-            body: point.body,
-            local: point.local,
-            direction: point.direction,
-            world: gt.translation().xy(),
-            occupied: point.occupied,
-            panel: point.door_panel,
+        .filter(|(entity, ..)| Some(structure_root(*entity, &parents)) == build.structure)
+        .map(|(entity, point, gt)| {
+            let world = gt.translation().xy();
+            PointInfo {
+                entity,
+                body: point.body,
+                local: point.local,
+                direction: point.direction,
+                world,
+                occupied: point.occupied,
+                blocked: inv.is_some_and(|i| cell_blocked(world, point.direction, i, &footprints)),
+                panel: point.door_panel,
+            }
         })
         .collect();
 
@@ -262,7 +403,16 @@ struct PointInfo {
     direction: Vec2,
     world: Vec2,
     occupied: bool,
+    /// Outward cell already filled by a neighbouring module — can't build here.
+    blocked: bool,
     panel: Entity,
+}
+
+impl PointInfo {
+    /// A point you can attach a new module to: free and not blocked by a neighbour.
+    fn available(&self) -> bool {
+        !self.occupied && !self.blocked
+    }
 }
 
 /// A resolved attachment: which points a module would cover and where it sits.
@@ -283,7 +433,7 @@ fn plan(infos: &[PointInfo], cursor: Vec2, size: u32, facing: Vec2) -> Option<Pl
     let target = infos
         .iter()
         .filter(|p| {
-            !p.occupied && same_dir(p.direction, facing) && p.world.distance(cursor) <= SNAP
+            p.available() && same_dir(p.direction, facing) && p.world.distance(cursor) <= SNAP
         })
         .min_by(|a, b| {
             a.world
@@ -315,7 +465,7 @@ fn plan(infos: &[PointInfo], cursor: Vec2, size: u32, facing: Vec2) -> Option<Pl
     // Best run of `n` consecutive free points (nearest the cursor).
     let mut best: Option<(f32, usize)> = None;
     for i in 0..=side.len() - n {
-        if side[i..i + n].iter().any(|p| p.occupied) {
+        if side[i..i + n].iter().any(|p| !p.available()) {
             continue;
         }
         let sum = side[i..i + n]
@@ -351,6 +501,9 @@ pub(crate) fn highlight_attach_points(
         &mut Transform,
         &mut Visibility,
     )>,
+    bodies: Query<&GlobalTransform>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    parents: Query<&ChildOf>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     if !build.active {
@@ -360,16 +513,25 @@ pub(crate) fn highlight_attach_points(
         return;
     }
 
+    // Only the structure being edited contributes attach points.
+    let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules, &parents);
+    let blocked =
+        |world: Vec2, dir: Vec2| inv.is_some_and(|i| cell_blocked(world, dir, i, &footprints));
     let infos: Vec<PointInfo> = points
         .iter()
-        .map(|(entity, point, gt, _, _, _)| PointInfo {
-            entity,
-            body: point.body,
-            local: point.local,
-            direction: point.direction,
-            world: gt.translation().xy(),
-            occupied: point.occupied,
-            panel: point.door_panel,
+        .filter(|(entity, ..)| Some(structure_root(*entity, &parents)) == build.structure)
+        .map(|(entity, point, gt, _, _, _)| {
+            let world = gt.translation().xy();
+            PointInfo {
+                entity,
+                body: point.body,
+                local: point.local,
+                direction: point.direction,
+                world,
+                occupied: point.occupied,
+                blocked: blocked(world, point.direction),
+                panel: point.door_panel,
+            }
         })
         .collect();
 
@@ -384,10 +546,17 @@ pub(crate) fn highlight_attach_points(
         .map(|p| p.covered)
         .unwrap_or_default();
 
-    for (entity, point, _, material, mut transform, mut vis) in &mut points {
+    for (entity, point, gt, material, mut transform, mut vis) in &mut points {
+        // Points on other structures stay hidden — you build one structure at a time.
+        if Some(structure_root(entity, &parents)) != build.structure {
+            *vis = Visibility::Hidden;
+            continue;
+        }
         *vis = Visibility::Visible;
         let hovered = covered.contains(&entity);
-        let color = if point.occupied {
+        // Occupied or blocked by a neighbour -> greyed out (can't build here).
+        let unavailable = point.occupied || blocked(gt.translation().xy(), point.direction);
+        let color = if unavailable {
             Color::srgba(0.5, 0.5, 0.5, 0.6)
         } else if hovered {
             Color::srgba(1.0, 0.95, 0.3, 0.95)
@@ -407,6 +576,9 @@ pub(crate) fn place_module(
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     mut build: ResMut<BuildMode>,
     mut points: Query<(Entity, &mut AttachPoint, &GlobalTransform)>,
+    bodies: Query<&GlobalTransform>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    parents: Query<&ChildOf>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -424,16 +596,22 @@ pub(crate) fn place_module(
         return;
     };
 
+    let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules, &parents);
     let infos: Vec<PointInfo> = points
         .iter()
-        .map(|(entity, point, gt)| PointInfo {
-            entity,
-            body: point.body,
-            local: point.local,
-            direction: point.direction,
-            world: gt.translation().xy(),
-            occupied: point.occupied,
-            panel: point.door_panel,
+        .filter(|(entity, ..)| Some(structure_root(*entity, &parents)) == build.structure)
+        .map(|(entity, point, gt)| {
+            let world = gt.translation().xy();
+            PointInfo {
+                entity,
+                body: point.body,
+                local: point.local,
+                direction: point.direction,
+                world,
+                occupied: point.occupied,
+                blocked: inv.is_some_and(|i| cell_blocked(world, point.direction, i, &footprints)),
+                panel: point.door_panel,
+            }
         })
         .collect();
 
@@ -491,6 +669,7 @@ pub(crate) fn deconstruct_module(
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     mut commands: Commands,
     modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    parents: Query<&ChildOf>,
     mut points: Query<&mut AttachPoint>,
 ) {
     if !build.active || build.selected.is_some() || !mouse.just_pressed(MouseButton::Left) {
@@ -500,9 +679,13 @@ pub(crate) fn deconstruct_module(
         return;
     };
 
-    // The built module whose footprint is under the cursor (nearest center wins).
+    // The built module whose footprint is under the cursor (nearest center wins),
+    // restricted to the structure being edited.
     let mut hit: Option<(Entity, f32)> = None;
     for (entity, module, gt) in &modules {
+        if Some(structure_root(entity, &parents)) != build.structure {
+            continue;
+        }
         let local = gt.affine().inverse().transform_point3(cursor.extend(0.));
         let h = module.size / 2.;
         if local.x.abs() <= h.x && local.y.abs() <= h.y {
@@ -542,12 +725,12 @@ pub(crate) fn update_build_text(
         return;
     };
     let content = if !build.active {
-        "[B] Build mode".to_string()
+        String::new()
     } else {
         match build.selected {
-            None => "BUILD MODE — select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway   |  click a module to remove   ([B] exit)".to_string(),
+            None => "BUILD MODE — select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway  [7] Cockpit   |  click a module to remove   ([B]/[Esc] exit)".to_string(),
             Some(kind) => format!(
-                "BUILD MODE — placing {} — click a highlighted attach point   ([R] rotate, [B] exit)",
+                "BUILD MODE — placing {} — click a highlighted attach point   ([R] rotate, [B]/[Esc] exit)",
                 kind.name()
             ),
         }
@@ -558,7 +741,7 @@ pub(crate) fn update_build_text(
 pub(crate) fn spawn_build_ui(mut commands: Commands) {
     commands.spawn((
         BuildText,
-        Text::new("[B] Build mode"),
+        Text::new(""),
         TextColor(Color::srgb(0.8, 0.9, 1.0)),
         Node {
             position_type: PositionType::Absolute,

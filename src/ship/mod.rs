@@ -12,21 +12,20 @@ pub struct PlayerShip;
 #[derive(Component)]
 pub struct ShipBase;
 
-/// A station the player can sit at to steer the ship. `local_offset` is its
-/// position relative to the ship base origin, used to anchor the seated player
-/// directly from the ship's physics `Position` (no transform-propagation lag).
+/// A pilot seat the player can sit at to steer the ship. Lives inside a cockpit
+/// module. The seated player's pose is anchored from the ship's physics `Position`
+/// plus the seat's offset in the ship-root frame (captured in `Seated`), so there's
+/// no transform-propagation lag.
 #[derive(Component)]
-pub struct PilotSeat {
-    pub local_offset: Vec2,
-}
+pub struct PilotSeat;
 
 pub fn spawn_player_ship(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let ship_rectangle = Rectangle::new(100., 100.);
-    // The ship's starting turret and docking port are pre-mounted buildable
+    let ship_rectangle = Rectangle::new(150., 150.);
+    // The ship's starting cockpit, turret and docking port are pre-mounted buildable
     // modules (see `spawn_player_ship_base`), the same kinds you can build via the
     // build menu.
     spawn_player_ship_base(
@@ -82,28 +81,47 @@ pub fn spawn_player_ship_base(
 
     let half = rectangle.half_size;
 
-    // The hull is a size-2 body: every side is buildable, with two doorway slots
-    // (sealed by removable panels) and two attach points. Top and bottom start
-    // free; the right and left come with pre-mounted modules built through the
-    // same path the build menu uses.
-    for normal in [Vec2::Y, Vec2::NEG_Y] {
-        crate::build::build_buildable_side(
-            &mut commands,
-            ship_base,
-            half,
-            2,
-            normal,
-            meshes,
-            materials,
-        );
-    }
+    // The hull (the engineering module) is a size-3 body: every side is buildable,
+    // with three doorway slots (sealed by removable panels) and three attach points.
+    // The bottom starts free; the other three sides come with pre-mounted modules,
+    // each centered on the middle slot, built through the same path the build menu
+    // uses.
+    const MID: usize = 1;
+    crate::build::build_buildable_side(
+        &mut commands,
+        ship_base,
+        half,
+        3,
+        Vec2::NEG_Y,
+        meshes,
+        materials,
+    );
 
-    // Right side: a starting turret on its first slot.
+    // Top side: a starting cockpit module (holds the pilot seat).
+    let top = crate::build::build_buildable_side(
+        &mut commands,
+        ship_base,
+        half,
+        3,
+        Vec2::Y,
+        meshes,
+        materials,
+    );
+    crate::build::mount_preplaced_cockpit(
+        &mut commands,
+        ship_base,
+        &top[MID],
+        Vec2::Y,
+        meshes,
+        materials,
+    );
+
+    // Right side: a starting turret.
     let right = crate::build::build_buildable_side(
         &mut commands,
         ship_base,
         half,
-        2,
+        3,
         Vec2::X,
         meshes,
         materials,
@@ -111,19 +129,19 @@ pub fn spawn_player_ship_base(
     crate::build::mount_preplaced_turret(
         &mut commands,
         ship_base,
-        &right[0],
+        &right[MID],
         Vec2::X,
         meshes,
         materials,
     );
 
-    // Left side: a docking airlock on its first slot (opens the doorway so the
-    // crew can board a docked structure).
+    // Left side: a docking airlock (opens the doorway so the crew can board a
+    // docked structure).
     let left = crate::build::build_buildable_side(
         &mut commands,
         ship_base,
         half,
-        2,
+        3,
         Vec2::NEG_X,
         meshes,
         materials,
@@ -131,27 +149,21 @@ pub fn spawn_player_ship_base(
     crate::build::mount_preplaced_dock(
         &mut commands,
         ship_base,
-        &[&left[0]],
+        &[&left[MID]],
         Vec2::NEG_X,
         meshes,
         materials,
     );
 
-    // Pilot seat: a small marker near the front of the ship the player can sit
-    // at to steer. No collider so the player can walk onto it.
-    let seat_offset = Vec2::new(0., 30.);
-    let _pilot_seat = {
-        let seat = Circle::new(8.);
-        commands.spawn((
-            PilotSeat {
-                local_offset: seat_offset,
-            },
-            ChildOf(ship_base),
-            Transform::from_xyz(seat_offset.x, seat_offset.y, 0.5),
-            Mesh2d(meshes.add(seat)),
-            MeshMaterial2d(materials.add(Color::srgb(0., 0.6, 1.))),
-        ))
-    };
+    // Engineering console: the ship hull is its engineering module; interacting
+    // with this console (E) opens build mode for this ship.
+    crate::build::spawn_build_console(
+        ship_base,
+        Vec2::new(0., -30.),
+        &mut commands,
+        meshes,
+        materials,
+    );
 
     ship_base
 }

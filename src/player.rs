@@ -48,6 +48,9 @@ pub struct MoveInput(pub Vec2);
 pub struct Seated {
     pub seat: Entity,
     pub ship: Entity,
+    /// The seat's position in the ship-root local frame, captured when sitting.
+    /// Anchoring uses `ship_pos + ship_rot * ship_local` for a lag-free pose.
+    pub ship_local: Vec2,
 }
 
 /// Snapshot taken before the physics step so the carry can be corrected against
@@ -143,13 +146,15 @@ pub fn spawn_player(
 }
 
 /// Read keyboard into the player's local-frame walk direction. A seated player
-/// can't walk (it's anchored to the seat and steering the ship instead).
+/// can't walk (it's anchored to the seat and steering the ship instead), and
+/// neither can one in build mode (working at the engineering console).
 pub fn read_player_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
+    build: Res<crate::build::BuildMode>,
     mut query: Query<(&mut MoveInput, Option<&Seated>), With<Player>>,
 ) {
     for (mut input, seated) in query.iter_mut() {
-        if seated.is_some() {
+        if seated.is_some() || build.active {
             input.0 = Vec2::ZERO;
             continue;
         }
@@ -170,10 +175,28 @@ pub fn read_player_input(
     }
 }
 
-/// World position of a pilot seat, derived from its ship's physics pose so it's
-/// consistent with the physics `Position` we anchor the seated player to.
-fn seat_world_pos(seat: &PilotSeat, ship_pos: &Position, ship_rot: &Rotation) -> Vec2 {
-    ship_pos.0 + *ship_rot * seat.local_offset
+/// Resolve a seat's ship: its `ShipBase` ancestor and the seat's offset in that
+/// ship's local frame. Composes the local transforms up the hierarchy (seat ->
+/// cockpit module -> ... -> hull), so it stays exact wherever the cockpit is
+/// mounted and avoids transform-propagation lag (it reads local `Transform`s, not
+/// the not-yet-propagated `GlobalTransform`).
+fn resolve_seat_ship(
+    seat: Entity,
+    transforms: &Query<&Transform>,
+    parents: &Query<&ChildOf>,
+    ships: &Query<Entity, With<ShipBase>>,
+) -> Option<(Entity, Vec2)> {
+    let mut accum = Transform::IDENTITY;
+    let mut current = seat;
+    loop {
+        let t = transforms.get(current).ok()?;
+        accum = t.mul_transform(accum);
+        let parent = parents.get(current).ok()?.parent();
+        if ships.contains(parent) {
+            return Some((parent, accum.translation.xy()));
+        }
+        current = parent;
+    }
 }
 
 /// Sit down at / stand up from a nearby pilot seat on press of E.
@@ -181,8 +204,10 @@ pub fn toggle_seat(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
     players: Query<(Entity, &Position, Option<&Seated>), With<Player>>,
-    seats: Query<(Entity, &PilotSeat, &ChildOf)>,
-    ships: Query<(&Position, &Rotation), With<ShipBase>>,
+    seats: Query<(Entity, &GlobalTransform), With<PilotSeat>>,
+    transforms: Query<&Transform>,
+    parents: Query<&ChildOf>,
+    ships: Query<Entity, With<ShipBase>>,
 ) {
     if !keyboard_input.just_pressed(KeyCode::KeyE) {
         return;
@@ -197,23 +222,23 @@ pub fn toggle_seat(
         }
 
         // Otherwise sit at the nearest seat in range.
-        let mut best: Option<(Entity, Entity, f32)> = None;
-        for (seat_entity, seat, child_of) in seats.iter() {
-            let ship_entity = child_of.parent();
-            let Ok((ship_pos, ship_rot)) = ships.get(ship_entity) else {
+        let mut best: Option<(Entity, Entity, Vec2, f32)> = None;
+        for (seat_entity, seat_gt) in seats.iter() {
+            let Some((ship_entity, ship_local)) =
+                resolve_seat_ship(seat_entity, &transforms, &parents, &ships)
+            else {
                 continue;
             };
-            let dist = player_pos
-                .0
-                .distance(seat_world_pos(seat, ship_pos, ship_rot));
-            if dist <= SIT_RANGE && best.is_none_or(|(_, _, b)| dist < b) {
-                best = Some((seat_entity, ship_entity, dist));
+            let dist = player_pos.0.distance(seat_gt.translation().xy());
+            if dist <= SIT_RANGE && best.is_none_or(|(_, _, _, b)| dist < b) {
+                best = Some((seat_entity, ship_entity, ship_local, dist));
             }
         }
-        if let Some((seat_entity, ship_entity, _)) = best {
+        if let Some((seat_entity, ship_entity, ship_local, _)) = best {
             commands.entity(player_entity).insert(Seated {
                 seat: seat_entity,
                 ship: ship_entity,
+                ship_local,
             });
         }
     }
@@ -250,7 +275,6 @@ pub fn drive_player_on_ship(
         ),
         With<ShipBase>,
     >,
-    seats: Query<&PilotSeat>,
 ) {
     const SPEED: f32 = 210.0;
     let dt = time.delta_secs();
@@ -274,18 +298,16 @@ pub fn drive_player_on_ship(
         // Seated: rigidly anchor to the seat. Drive velocity toward the seat's
         // world position this step; `correct_player_carry` snaps it exactly.
         if let Some(seated) = seated {
-            if let Ok(seat) = seats.get(seated.seat) {
-                let target = seat_world_pos(seat, ship_pos, ship_rot);
-                player_vel.0 = if dt > 0.0 {
-                    (target - player_pos.0) / dt
-                } else {
-                    Vec2::ZERO
-                };
-                *player_rot = *ship_rot;
-                // Skip the carry correction; the seat anchor below owns the pose.
-                carry_state.valid = false;
-                continue;
-            }
+            let target = ship_pos.0 + *ship_rot * seated.ship_local;
+            player_vel.0 = if dt > 0.0 {
+                (target - player_pos.0) / dt
+            } else {
+                Vec2::ZERO
+            };
+            *player_rot = *ship_rot;
+            // Skip the carry correction; the seat anchor below owns the pose.
+            carry_state.valid = false;
+            continue;
         }
 
         // Carry with the ship's *commanded* velocity (set this tick) so there's
@@ -385,16 +407,13 @@ pub fn correct_player_carry(
         Without<ShipBase>,
     >,
     ships: Query<(&Position, &Rotation, &ComputedCenterOfMass), With<ShipBase>>,
-    seats: Query<&PilotSeat>,
 ) {
     let dt = time.delta_secs();
     for (mut player_pos, mut player_rot, state, on_ship, seated) in players.iter_mut() {
         // Seated: hard-anchor to the seat regardless of what the solver did.
         if let Some(seated) = seated {
-            if let (Ok((ship_pos, ship_rot, _)), Ok(seat)) =
-                (ships.get(on_ship.ship_entity), seats.get(seated.seat))
-            {
-                player_pos.0 = seat_world_pos(seat, ship_pos, ship_rot);
+            if let Ok((ship_pos, ship_rot, _)) = ships.get(on_ship.ship_entity) {
+                player_pos.0 = ship_pos.0 + *ship_rot * seated.ship_local;
                 *player_rot = *ship_rot;
             }
             continue;

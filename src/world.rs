@@ -89,7 +89,7 @@ fn spawn_world(
     // The first real world element: a space station off to one side, built as a
     // hierarchy (see `spawn_space_station`).
     spawn_space_station(
-        Vec2::new(600., 250.),
+        Vec2::new(1200., 0.),
         commands.reborrow(),
         &mut meshes,
         &mut materials,

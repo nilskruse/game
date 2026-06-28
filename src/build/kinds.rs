@@ -38,6 +38,7 @@ pub(crate) enum ModuleKind {
     Turret,
     Dock,
     Hallway,
+    Cockpit,
 }
 
 impl ModuleKind {
@@ -50,6 +51,7 @@ impl ModuleKind {
             ModuleKind::Turret => (1, 1),
             ModuleKind::Dock => (1, 1),
             ModuleKind::Hallway => (1, 2),
+            ModuleKind::Cockpit => (1, 1),
         };
         Footprint { width, depth }
     }
@@ -62,6 +64,7 @@ impl ModuleKind {
             ModuleKind::Turret => Color::srgb(0.40, 0.42, 0.45),
             ModuleKind::Dock => Color::srgb(1.0, 0.7, 0.1),
             ModuleKind::Hallway => Color::srgb(0.45, 0.48, 0.52),
+            ModuleKind::Cockpit => Color::srgb(0.25, 0.45, 0.65),
         }
     }
 
@@ -73,6 +76,7 @@ impl ModuleKind {
             ModuleKind::Turret => "Turret",
             ModuleKind::Dock => "Dock",
             ModuleKind::Hallway => "Hallway",
+            ModuleKind::Cockpit => "Cockpit",
         }
     }
 
@@ -80,7 +84,10 @@ impl ModuleKind {
     /// become buildable bodies themselves); non-walkable ones are solid blocks
     /// that leave the hull sealed.
     pub(crate) fn walkable(self) -> bool {
-        matches!(self, ModuleKind::Cargo | ModuleKind::Hallway)
+        matches!(
+            self,
+            ModuleKind::Cargo | ModuleKind::Hallway | ModuleKind::Cockpit
+        )
     }
 
     /// Whether placing this opens the covered hull doorways (so the crew can pass
@@ -88,13 +95,18 @@ impl ModuleKind {
     pub(crate) fn opens_doorway(self) -> bool {
         matches!(
             self,
-            ModuleKind::Cargo | ModuleKind::Hallway | ModuleKind::Dock
+            ModuleKind::Cargo | ModuleKind::Hallway | ModuleKind::Dock | ModuleKind::Cockpit
         )
     }
 
     /// Whether a weapon turret is mounted on top of the module's block.
     pub(crate) fn mounts_turret(self) -> bool {
         matches!(self, ModuleKind::Turret)
+    }
+
+    /// Whether a pilot seat is placed in the module (the cockpit).
+    pub(crate) fn has_seat(self) -> bool {
+        matches!(self, ModuleKind::Cockpit)
     }
 
     /// Whether this is a docking port (a sensor collar at the hull edge, no block).

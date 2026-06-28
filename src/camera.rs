@@ -16,12 +16,18 @@ pub fn move_camera(
     mut camera_transform: Single<&mut Transform, With<Camera2d>>,
     player: Single<(&Transform, Option<&Seated>), (With<Player>, Without<Camera2d>)>,
     ship_transform: Single<&Transform, (With<PlayerShip>, Without<Camera2d>, Without<Player>)>,
+    structures: Query<&GlobalTransform, Without<Camera2d>>,
 ) {
     let (player_transform, seated) = *player;
 
-    let (target_translation, target_rotation) = if build.active {
-        // Build mode: frame the whole ship, rotated so the hull sits upright.
-        (ship_transform.translation, ship_transform.rotation)
+    let build_target = build
+        .structure()
+        .and_then(|s| structures.get(s).ok())
+        .map(|gt| gt.compute_transform());
+
+    let (target_translation, target_rotation) = if let Some(t) = build_target {
+        // Build mode: frame the structure being edited, rotated so it sits upright.
+        (t.translation, t.rotation)
     } else if seated.is_some() {
         // Piloting: follow the ship, upright.
         (ship_transform.translation, Quat::IDENTITY)

@@ -119,9 +119,13 @@ fn spawn_module_sided(
     // A module centers half its depth outside the edge.
     let center = edge + direction * (footprint.depth as f32 * UNIT / 2.);
     if kind.walkable() {
-        return spawn_module_room(
+        let mounted = spawn_module_room(
             commands, body, center, direction, kind, footprint, meshes, materials,
         );
+        if kind.has_seat() {
+            spawn_pilot_seat(commands, mounted.module, meshes, materials);
+        }
+        return mounted;
     }
 
     let module = spawn_solid_module(
@@ -226,6 +230,44 @@ pub fn mount_preplaced_dock(
         meshes,
         materials,
     );
+}
+
+/// Pre-mount a cockpit module on `slot` during ship construction.
+pub fn mount_preplaced_cockpit(
+    commands: &mut Commands,
+    body: Entity,
+    slot: &AttachSlot,
+    direction: Vec2,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    mount(
+        commands,
+        body,
+        &[slot],
+        direction,
+        ModuleKind::Cockpit,
+        meshes,
+        materials,
+    );
+}
+
+/// Spawn the pilot seat at the center of a cockpit `module`. No collider, so the
+/// player walks onto it and sits with E.
+fn spawn_pilot_seat(
+    commands: &mut Commands,
+    module: Entity,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    let seat = Circle::new(8.);
+    commands.spawn((
+        crate::ship::PilotSeat,
+        ChildOf(module),
+        Transform::from_xyz(0., 0., 0.5),
+        Mesh2d(meshes.add(seat)),
+        MeshMaterial2d(materials.add(Color::srgb(0., 0.6, 1.))),
+    ));
 }
 
 /// Attach a solid (non-walkable) module block. The hull doorway stays sealed and

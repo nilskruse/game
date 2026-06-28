@@ -7,9 +7,11 @@ mod spawn;
 
 pub use attach::{build_buildable_side, AttachSlot};
 pub(crate) use kinds::ModuleKind;
-pub use mode::BuildMode;
+pub use mode::{spawn_build_console, BuildMode};
 pub(crate) use spawn::{mount, Mounted};
-pub use spawn::{mount_preplaced_dock, mount_preplaced_turret, spawn_dock_module};
+pub use spawn::{
+    mount_preplaced_cockpit, mount_preplaced_dock, mount_preplaced_turret, spawn_dock_module,
+};
 
 /// One size step in world units. A body of "size N" is `N * UNIT` on each side
 /// and exposes N attachment points per side.
@@ -39,7 +41,7 @@ impl Plugin for BuildPlugin {
             .add_systems(
                 Update,
                 (
-                    mode::toggle_build_mode,
+                    mode::exit_build_mode,
                     mode::select_module,
                     mode::rotate_module,
                     mode::update_ghost,
