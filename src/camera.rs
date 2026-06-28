@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::{
+    build::BuildMode,
     player::{Player, Seated},
     ship::PlayerShip,
 };
@@ -11,13 +12,17 @@ pub fn spawn_camera(mut commands: Commands) {
 
 pub fn move_camera(
     time: Res<Time>,
+    build: Res<BuildMode>,
     mut camera_transform: Single<&mut Transform, With<Camera2d>>,
     player: Single<(&Transform, Option<&Seated>), (With<Player>, Without<Camera2d>)>,
     ship_transform: Single<&Transform, (With<PlayerShip>, Without<Camera2d>, Without<Player>)>,
 ) {
     let (player_transform, seated) = *player;
 
-    let (target_translation, target_rotation) = if seated.is_some() {
+    let (target_translation, target_rotation) = if build.active {
+        // Build mode: frame the whole ship, rotated so the hull sits upright.
+        (ship_transform.translation, ship_transform.rotation)
+    } else if seated.is_some() {
         // Piloting: follow the ship, upright.
         (ship_transform.translation, Quat::IDENTITY)
     } else {

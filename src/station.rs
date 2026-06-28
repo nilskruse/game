@@ -1,9 +1,7 @@
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
-use crate::{
-    docking::spawn_docking_port, interaction::spawn_console, ship::GameLayer, world::WorldElement,
-};
+use crate::{interaction::spawn_console, ship::GameLayer, world::WorldElement};
 
 /// Marker for a space station's root entity.
 #[derive(Component)]
@@ -167,8 +165,16 @@ pub fn spawn_space_station(
     );
     spawn_console(station, Vec2::new(-125., 28.), "Reactor", commands.reborrow(), meshes, materials);
 
-    // Docking port above the bay's open top doorway.
-    spawn_docking_port(station, Vec2::new(0., 280.), 0., commands.reborrow(), meshes, materials);
+    // Docking airlock on the bay's top edge (the same module ships use), opening
+    // down into the bay and outward (+Y) for an arriving ship to mate with.
+    crate::build::spawn_dock_module(
+        &mut commands,
+        station,
+        Vec2::new(0., 270.),
+        Vec2::Y,
+        meshes,
+        materials,
+    );
 
     station
 }
@@ -288,7 +294,7 @@ fn spawn_solid_module(
             Collider::from(rect),
             Mesh2d(meshes.add(rect)),
             MeshMaterial2d(materials.add(color)),
-            CollisionLayers::new(GameLayer::Walls, [GameLayer::Walls]),
+            CollisionLayers::new(GameLayer::Walls, [GameLayer::Player]),
         ))
         .id();
 
@@ -363,6 +369,6 @@ fn spawn_wall_seg(
         Collider::from(rect),
         Mesh2d(meshes.add(rect)),
         MeshMaterial2d(materials.add(color)),
-        CollisionLayers::new(GameLayer::Walls, [GameLayer::Walls]),
+        CollisionLayers::new(GameLayer::Walls, [GameLayer::Player]),
     ));
 }

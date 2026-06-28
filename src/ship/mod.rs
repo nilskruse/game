@@ -1,8 +1,6 @@
 pub mod bullet;
 pub mod turret;
 
-use std::process::Child;
-
 use avian2d::prelude::*;
 use bevy::{app::Propagate, prelude::*};
 
@@ -38,56 +36,21 @@ pub fn spawn_player_ship(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let ship_rectangle = Rectangle::new(100., 100.);
-    let ship_base = spawn_player_ship_base(
-        ship_rectangle,
-        commands.reborrow(),
-        &mut meshes,
-        &mut materials,
-    );
-
-    let module_attachment_point = spawn_module_attachment_point(
-        ship_base,
-        ship_rectangle,
-        commands.reborrow(),
-        &mut meshes,
-        &mut materials,
-    );
-
-    let module_rectangle = Rectangle::new(50., 50.);
-    let module = spawn_module(
-        module_attachment_point,
-        module_rectangle,
-        commands.reborrow(),
-        &mut meshes,
-        &mut materials,
-    );
-
-    let turret_attachment_point =
-        create_turret_attachment_point(module, commands.reborrow(), &mut meshes, &mut materials);
-    let _turret = turret::spawn_turret(
-        turret_attachment_point,
-        commands.reborrow(),
-        &mut meshes,
-        &mut materials,
-    );
-
-    // A docking port on the ship's left side (-X), facing outward. Rotating the
-    // port's local +Y by 90° points its facing toward -X.
-    let _dock = crate::docking::spawn_docking_port(
-        ship_base,
-        Vec2::new(-55., 0.),
-        std::f32::consts::FRAC_PI_2,
-        commands.reborrow(),
-        &mut meshes,
-        &mut materials,
-    );
+    // The ship's starting turret and docking port are pre-mounted buildable
+    // modules (see `spawn_player_ship_base`), the same kinds you can build via the
+    // build menu.
+    spawn_player_ship_base(ship_rectangle, commands.reborrow(), &mut meshes, &mut materials);
 }
 
 #[derive(PhysicsLayer, Default)]
 pub enum GameLayer {
     #[default]
     Default,
+    /// Interior walls (hull, modules, station rooms). They block the player but
+    /// not each other, so structures don't physically fight when docking.
     Walls,
+    /// The walking player.
+    Player,
 }
 
 pub fn spawn_player_ship_base(
@@ -109,63 +72,62 @@ pub fn spawn_player_ship_base(
         ))
         .id();
 
-    let thickness = 5.;
-    let collision_layers = CollisionLayers::new(GameLayer::Walls, [GameLayer::Walls]);
-    let _top_wall = {
-    let thickness = 20.;
-        let rect = Rectangle::new(rectangle.size().x, thickness);
-        commands.spawn((
-            ChildOf(ship_base),
-            Collider::from(rect),
-            Transform::from_xyz(0., rectangle.half_size.y - thickness / 2., 0.),
-            Mesh2d(meshes.add(rect)),
-            MeshMaterial2d(materials.add(Color::srgb(1., 0., 0.))),
-            collision_layers,
-        ))
-    };
-    let _bottom_wall = {
-        let rect = Rectangle::new(rectangle.size().x, thickness);
-        commands.spawn((
-            ChildOf(ship_base),
-            Collider::from(rect),
-            Transform::from_xyz(0., -rectangle.half_size.y - thickness / 2., 0.),
-            Mesh2d(meshes.add(rect)),
-            MeshMaterial2d(materials.add(Color::srgb(1., 0., 0.))),
-            collision_layers,
-        ))
-    };
+    let half = rectangle.half_size;
 
-    // Left wall, split into two segments to leave a doorway (centered at y = 0)
-    // for the docking port, so the player can walk out toward a docked structure.
-    let _left_wall = {
-        let door_half = 20.;
-        let seg_height = rectangle.half_size.y - door_half;
-        let seg_center = door_half + seg_height / 2.;
-        let x = -rectangle.half_size.x + thickness / 2.;
-        let rect = Rectangle::new(thickness, seg_height);
-        for sy in [-1.0_f32, 1.0] {
-            commands.spawn((
-                ChildOf(ship_base),
-                Collider::from(rect),
-                Transform::from_xyz(x, sy * seg_center, 0.),
-                Mesh2d(meshes.add(rect)),
-                MeshMaterial2d(materials.add(Color::srgb(1., 0., 0.))),
-                collision_layers,
-            ));
-        }
-    };
+    // The hull is a size-2 body: every side is buildable, with two doorway slots
+    // (sealed by removable panels) and two attach points. Top and bottom start
+    // free; the right and left come with pre-mounted modules built through the
+    // same path the build menu uses.
+    for normal in [Vec2::Y, Vec2::NEG_Y] {
+        crate::build::build_buildable_side(
+            &mut commands,
+            ship_base,
+            half,
+            2,
+            normal,
+            meshes,
+            materials,
+        );
+    }
 
-    let _right_wall = {
-        let rect = Rectangle::new(thickness, rectangle.size().y);
-        commands.spawn((
-            ChildOf(ship_base),
-            Collider::from(rect),
-            Transform::from_xyz(rectangle.half_size.x - thickness / 2., 0., 0.),
-            Mesh2d(meshes.add(rect)),
-            MeshMaterial2d(materials.add(Color::srgb(1., 0., 0.))),
-            collision_layers,
-        ))
-    };
+    // Right side: a starting turret on its first slot.
+    let right = crate::build::build_buildable_side(
+        &mut commands,
+        ship_base,
+        half,
+        2,
+        Vec2::X,
+        meshes,
+        materials,
+    );
+    crate::build::mount_preplaced_turret(
+        &mut commands,
+        ship_base,
+        &right[0],
+        Vec2::X,
+        meshes,
+        materials,
+    );
+
+    // Left side: a docking airlock on its first slot (opens the doorway so the
+    // crew can board a docked structure).
+    let left = crate::build::build_buildable_side(
+        &mut commands,
+        ship_base,
+        half,
+        2,
+        Vec2::NEG_X,
+        meshes,
+        materials,
+    );
+    crate::build::mount_preplaced_dock(
+        &mut commands,
+        ship_base,
+        &[&left[0]],
+        Vec2::NEG_X,
+        meshes,
+        materials,
+    );
 
     // Pilot seat: a small marker near the front of the ship the player can sit
     // at to steer. No collider so the player can walk onto it.

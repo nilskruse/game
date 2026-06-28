@@ -136,7 +136,7 @@ pub fn spawn_player(
                 ship_entity: ship_entity,
                 relative_transform: Transform::from_xyz(25., 0., 0.),
             },
-            CollisionLayers::new(GameLayer::Walls, [GameLayer::Walls]),
+            CollisionLayers::new(GameLayer::Player, [GameLayer::Walls]),
             // SweptCcd::default(),
             // CustomPositionIntegration,
             // CustomVelocityIntegration,

@@ -85,7 +85,8 @@ pub fn toggle_dock(
     keyboard: Res<ButtonInput<KeyCode>>,
     pilots: Query<&Seated>,
     mut commands: Commands,
-    mut ports: Query<(Entity, &mut DockingPort, &ChildOf, &GlobalTransform)>,
+    mut ports: Query<(Entity, &mut DockingPort, &GlobalTransform)>,
+    parents: Query<&ChildOf>,
     mut ships: Query<
         (
             &GlobalTransform,
@@ -108,13 +109,15 @@ pub fn toggle_dock(
     let ship_entity = seated.ship;
 
     // Snapshot every port's world pose so we can search without holding borrows.
+    // A port's structure is its root body (walk up the hierarchy), so ports
+    // mounted on nested modules still resolve to the ship/station they belong to.
     let snapshots: Vec<PortSnapshot> = ports
         .iter()
-        .map(|(entity, port, child_of, gt)| {
+        .map(|(entity, port, gt)| {
             let t = gt.compute_transform();
             PortSnapshot {
                 entity,
-                structure: child_of.parent(),
+                structure: root_of(entity, &parents),
                 position: t.translation.xy(),
                 normal: (t.rotation * Vec3::Y).xy().normalize_or_zero(),
                 affine: gt.affine(),
@@ -129,10 +132,10 @@ pub fn toggle_dock(
 
     // Already docked -> undock and bail.
     if let Some(other) = ship_port.docked_to {
-        if let Ok((_, mut port, _, _)) = ports.get_mut(ship_port.entity) {
+        if let Ok((_, mut port, _)) = ports.get_mut(ship_port.entity) {
             port.docked_to = None;
         }
-        if let Ok((_, mut port, _, _)) = ports.get_mut(other) {
+        if let Ok((_, mut port, _)) = ports.get_mut(other) {
             port.docked_to = None;
         }
         commands.entity(ship_entity).remove::<Docked>();
@@ -183,11 +186,21 @@ pub fn toggle_dock(
 
     // Record the latch on both ports and lock the ship.
     let (ship_port_entity, cand_entity) = (ship_port.entity, cand.entity);
-    if let Ok((_, mut port, _, _)) = ports.get_mut(ship_port_entity) {
+    if let Ok((_, mut port, _)) = ports.get_mut(ship_port_entity) {
         port.docked_to = Some(cand_entity);
     }
-    if let Ok((_, mut port, _, _)) = ports.get_mut(cand_entity) {
+    if let Ok((_, mut port, _)) = ports.get_mut(cand_entity) {
         port.docked_to = Some(ship_port_entity);
     }
     commands.entity(ship_entity).insert(Docked);
+}
+
+/// Walk up the `ChildOf` chain to the topmost ancestor — the structure's root
+/// body (the ship hull or station root), which carries the `RigidBody`.
+fn root_of(entity: Entity, parents: &Query<&ChildOf>) -> Entity {
+    let mut current = entity;
+    while let Ok(child_of) = parents.get(current) {
+        current = child_of.parent();
+    }
+    current
 }

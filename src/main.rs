@@ -1,6 +1,7 @@
 pub mod action;
 pub mod animation;
 pub mod background;
+pub mod build;
 pub mod camera;
 pub mod character;
 pub mod docking;
@@ -65,6 +66,7 @@ fn main() {
         .add_plugins(Game)
         .add_plugins(WorldPlugin)
         .add_plugins(background::BackgroundPlugin)
+        .add_plugins(build::BuildPlugin)
         .run();
 }
 
