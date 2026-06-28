@@ -5,7 +5,10 @@ use crate::{
     build::{BuiltModule, UNIT},
     docking::Docked,
     player::Seated,
-    ship::{PlayerShip, ThrustCommand, Thruster, ThrusterNozzle, NOZZLE_BLOCKED, NOZZLE_OPEN},
+    ship::{
+        Piloted, PlayerShip, ShipBase, StructureRoot, ThrustCommand, ThrustControl, Thruster,
+        ThrusterNozzle, NOZZLE_BLOCKED, NOZZLE_OPEN,
+    },
 };
 
 /// Nozzle color while actively firing.
@@ -62,17 +65,56 @@ struct ThrustPools {
     cw: f32,
 }
 
-/// Steer the piloted ship by its thrusters. A ship can only accelerate (or brake,
-/// or turn) in a direction it has a thruster pushing that way — there's no free
-/// movement. Releasing the controls auto-brakes toward rest, but only as fast as
-/// the *opposing* thrusters allow (no reverse thruster => you coast forever).
+/// Translate the player's keyboard into the player ship's [`ThrustControl`] intent,
+/// and mark the ship [`Piloted`] while they're at the helm. This is the only
+/// player-specific flight code — the actual motion is solved generically by
+/// [`drive_ships`], so an AI system can drive an enemy ship the same way (set its
+/// `ThrustControl`, add `Piloted`).
+///
+/// A docked or un-crewed ship gets zero intent and loses `Piloted` (so it holds
+/// still / coasts rather than auto-braking).
+pub(crate) fn control_player_ship(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    pilots: Query<&Seated>,
+    mut commands: Commands,
+    mut ships: Query<(Entity, &mut ThrustControl, Has<Docked>, Has<Piloted>), With<PlayerShip>>,
+) {
+    for (ship, mut control, docked, was_piloted) in &mut ships {
+        let piloted = !docked && pilots.iter().any(|seated| seated.ship == ship);
+        if piloted {
+            // Inputs (ship-local): Q/E strafe (+X right), W/S forward (+Y), A/D
+            // rotate (+rot counter-clockwise).
+            *control = ThrustControl {
+                linear: Vec2::new(
+                    axis(&keyboard_input, KeyCode::KeyE, KeyCode::KeyQ),
+                    axis(&keyboard_input, KeyCode::KeyW, KeyCode::KeyS),
+                ),
+                rotation: axis(&keyboard_input, KeyCode::KeyA, KeyCode::KeyD),
+            };
+        } else {
+            *control = ThrustControl::default();
+        }
+        if piloted && !was_piloted {
+            commands.entity(ship).insert(Piloted);
+        } else if !piloted && was_piloted {
+            commands.entity(ship).remove::<Piloted>();
+        }
+    }
+}
+
+/// Drive every ship from its [`ThrustControl`] intent through its thrusters — the
+/// shared, faction-agnostic flight solver. A ship can only accelerate (or brake, or
+/// turn) in a direction it has a thruster pushing that way; there's no free movement.
 ///
 /// Motion is momentum-based: thrust ramps velocity toward a thrust/mass-scaled top
 /// speed rather than snapping to it. Rotation uses mass too (no moment of inertia /
 /// lever arm), but a thruster must sit off the center of mass to turn the ship.
-pub(crate) fn handle_input_ship(
+///
+/// A [`Piloted`] ship auto-brakes toward rest on any axis with no intent, but only as
+/// fast as the *opposing* thrusters allow (no reverse thruster => you coast forever).
+/// A ship that isn't `Piloted` simply coasts. Docked ships are pinned still.
+pub(crate) fn drive_ships(
     time: Res<Time>,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
     mut ships: Query<
         (
             Entity,
@@ -82,19 +124,30 @@ pub(crate) fn handle_input_ship(
             &GlobalTransform,
             &ComputedMass,
             &ComputedCenterOfMass,
+            &ThrustControl,
             &mut ThrustCommand,
             Has<Docked>,
+            Has<Piloted>,
         ),
-        With<PlayerShip>,
+        With<ShipBase>,
     >,
-    pilots: Query<&Seated>,
-    thrusters: Query<(Entity, &Thruster, &GlobalTransform)>,
-    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: Query<&ChildOf>,
+    thrusters: Query<(Entity, &Thruster, &GlobalTransform, &StructureRoot)>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
 ) {
     let dt = time.delta_secs();
-    for (ship, mut lin, mut ang, transform, ship_gt, mass, com, mut command, docked) in
-        ships.iter_mut()
+    for (
+        ship,
+        mut lin,
+        mut ang,
+        transform,
+        ship_gt,
+        mass,
+        com,
+        control,
+        mut command,
+        docked,
+        piloted,
+    ) in ships.iter_mut()
     {
         // Docked: locked to a static structure, hold still (and fire nothing).
         if docked {
@@ -105,7 +158,7 @@ pub(crate) fn handle_input_ship(
         }
 
         // Only a piloted ship is steered (and auto-braked); otherwise it coasts.
-        if !pilots.iter().any(|seated| seated.ship == ship) {
+        if !piloted {
             *command = ThrustCommand::default();
             continue;
         }
@@ -114,19 +167,15 @@ pub(crate) fn handle_input_ship(
         if mass <= 0.0 {
             continue;
         }
-        let pools = collect_thrust(ship, ship_gt, com.0, &thrusters, &modules, &parents);
+        let pools = collect_thrust(ship, ship_gt, com.0, &thrusters, &modules);
 
-        // Inputs (ship-local): Q/E strafe (+X right), W/S forward (+Y), A/D rotate
-        // (+rot counter-clockwise).
-        let in_x = axis(&keyboard_input, KeyCode::KeyE, KeyCode::KeyQ);
-        let in_y = axis(&keyboard_input, KeyCode::KeyW, KeyCode::KeyS);
-        let in_rot = axis(&keyboard_input, KeyCode::KeyA, KeyCode::KeyD);
+        let (in_x, in_y, in_rot) = (control.linear.x, control.linear.y, control.rotation);
 
         // Linear: work in the ship's local frame so "forward" tracks its facing.
         let rot = transform.rotation;
         let local_v = rot.inverse().mul_vec3(lin.0.extend(0.)).truncate();
 
-        // Record which way thrust is commanded (input, or auto-brake when idle) so
+        // Record which way thrust is exerted (intent, or auto-brake when idle) so
         // the firing nozzles can be lit. Uses pre-step velocity / spin.
         *command = ThrustCommand {
             linear: Vec2::new(
@@ -238,19 +287,18 @@ fn collect_thrust(
     ship: Entity,
     ship_gt: &GlobalTransform,
     com: Vec2,
-    thrusters: &Query<(Entity, &Thruster, &GlobalTransform)>,
-    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: &Query<&ChildOf>,
+    thrusters: &Query<(Entity, &Thruster, &GlobalTransform, &StructureRoot)>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
 ) -> ThrustPools {
     let inv = ship_gt.affine().inverse();
     let mut p = ThrustPools::default();
-    for (entity, thruster, gt) in thrusters.iter() {
-        if root_of(entity, parents) != ship {
+    for (entity, thruster, gt, root) in thrusters.iter() {
+        if root.0 != ship {
             continue;
         }
         let offset = inv.transform_point3(gt.translation()).truncate() - com;
         // A push whose exhaust runs straight into a neighbouring module is dead.
-        let live = |dir: Vec2| !exhaust_blocked(gt, dir, entity, ship, modules, parents);
+        let live = |dir: Vec2| !exhaust_blocked(gt, dir, entity, ship, modules);
 
         for &dir in &thruster.directions {
             if !live(dir) {
@@ -288,8 +336,7 @@ fn exhaust_blocked(
     push: Vec2,
     module: Entity,
     structure: Entity,
-    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: &Query<&ChildOf>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
 ) -> bool {
     let exhaust = thruster_gt
         .affine()
@@ -297,7 +344,7 @@ fn exhaust_blocked(
         .truncate()
         .normalize_or_zero();
     let cell = thruster_gt.translation().truncate() + exhaust * UNIT;
-    module_at(cell, module, structure, modules, parents)
+    module_at(cell, module, structure, modules)
 }
 
 /// Whether a module of `structure` (other than `exclude`) covers world point `cell`.
@@ -305,11 +352,10 @@ fn module_at(
     cell: Vec2,
     exclude: Entity,
     structure: Entity,
-    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: &Query<&ChildOf>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
 ) -> bool {
-    for (entity, built, gt) in modules.iter() {
-        if entity == exclude || root_of(entity, parents) != structure {
+    for (entity, built, gt, root) in modules.iter() {
+        if entity == exclude || root.0 != structure {
             continue;
         }
         let local = gt
@@ -325,14 +371,6 @@ fn module_at(
     false
 }
 
-/// Walk up the `ChildOf` chain to a thruster's structure root.
-fn root_of(mut entity: Entity, parents: &Query<&ChildOf>) -> Entity {
-    while let Ok(child_of) = parents.get(entity) {
-        entity = child_of.parent();
-    }
-    entity
-}
-
 /// Animate each thruster nozzle: a firing exhaust flares bright and pulses, a
 /// blocked one shows red, an idle one sits dark. "Firing" means its push direction
 /// is currently commanded (input or auto-brake, see [`ThrustCommand`]) and clear.
@@ -345,9 +383,9 @@ pub(crate) fn animate_thrusters(
         &mut Transform,
     )>,
     transforms: Query<&GlobalTransform>,
+    roots: Query<&StructureRoot>,
     ships: Query<(&GlobalTransform, &ComputedCenterOfMass, &ThrustCommand)>,
-    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: Query<&ChildOf>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     // A shared flicker so all firing nozzles pulse together like exhaust.
@@ -358,7 +396,9 @@ pub(crate) fn animate_thrusters(
         let Ok(module_gt) = transforms.get(module) else {
             continue;
         };
-        let structure = root_of(module, &parents);
+        let Ok(structure) = roots.get(module).map(|r| r.0) else {
+            continue;
+        };
 
         // Blocked? (exhaust runs straight into a neighbouring module)
         let exhaust_world = module_gt
@@ -367,7 +407,7 @@ pub(crate) fn animate_thrusters(
             .truncate()
             .normalize_or_zero();
         let cell = module_gt.translation().truncate() + exhaust_world * UNIT;
-        let blocked = module_at(cell, module, structure, &modules, &parents);
+        let blocked = module_at(cell, module, structure, &modules);
 
         // Firing? (its push direction is commanded and not blocked)
         let push = -nozzle.exhaust;
@@ -399,12 +439,13 @@ pub(crate) fn animate_thrusters(
     }
 }
 
-/// Light damping so coasting craft (and other loose bodies) settle. The piloted
-/// ship is excluded — its braking is the thruster-gated auto-brake above, not free
-/// drag, so a ship with no reverse thruster genuinely can't slow down.
+/// Light damping so loose bodies (characters, debris) settle. All ships are excluded
+/// — a ship's braking is the thruster-gated auto-brake above, not free drag, so a
+/// ship with no reverse thruster genuinely can't slow down (and a drifting hulk
+/// coasts forever).
 pub fn apply_movement_damping(
     time: Res<Time>,
-    mut query: Query<&mut LinearVelocity, Without<PlayerShip>>,
+    mut query: Query<&mut LinearVelocity, Without<ShipBase>>,
 ) {
     let delta_time = time.delta_secs();
     for mut linear_velocity in &mut query {

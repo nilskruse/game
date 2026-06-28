@@ -50,15 +50,20 @@ One unified path builds **all** modules — player ship, station, and enemy ship
 To assemble a structure: create a root body with a `Collider`, call `build_buildable_side` per side, then `mount`/`mount_far`. See `ship/mod.rs::spawn_player_ship_base` and `station.rs::spawn_space_station`.
 
 ### Docking (`src/docking.rs`)
-`DockingPort` faces along its local **+Y**. `toggle_dock` (Update, so the `F` `just_pressed` edge isn't missed) snapshots every port's world pose, resolves each port's structure via `root_of` (walks `ChildOf` to the `RigidBody` root), then finds the nearest aligned free pair and snaps the ship using affine math. A ship may carry several ports; all are considered. Airlock doors/structural colliders (`AirlockDoor`) are disabled while docked so two airlocks meet without ejection.
+`DockingPort` faces along its local **+Y**. `toggle_dock` (Update, so the `G` `just_pressed` edge isn't missed) snapshots every port's world pose, resolves each port's structure via its `StructureRoot` (see below), then finds the nearest aligned free pair and snaps the ship using affine math. A ship may carry several ports; all are considered. Airlock doors/structural colliders (`AirlockDoor`) are disabled while docked so two airlocks meet without ejection.
 
 ### Player-on-ship carry (`src/player.rs`) — subtle, don't refactor blindly
 The player is a separate dynamic body that must move with the ship. The working approach (others were tried and abandoned — see the note in `main.rs`):
 - `read_player_input` → `drive_player_on_ship` (FixedUpdate): set the player's carry velocity *before* the physics step so the solver carries it and walls block it.
 - `correct_player_carry` (FixedPostUpdate, between `StepSimulation` and `Writeback`): reconcile against the ship's *actual* post-solve motion using `CarryState`. When seated, hard-anchor to the `PilotSeat`.
 
-### Factions
-`InFaction(Faction)` propagates down hierarchies via `HierarchyPropagatePlugin::<InFaction>` (registered in `main.rs`). A turret mounted on a ship inherits the root's faction automatically — that's how the same turret module serves both player and enemy ships. Turret targeting (`ship/turret.rs`) uses `InFaction` to pick enemies.
+### Hierarchy propagation (factions & structure roots)
+Two components propagate down each structure's hierarchy via `HierarchyPropagatePlugin::<T>` (both registered in `main.rs`); set them on the root as `Propagate(T(..))` and every descendant — including modules built at runtime — inherits them one frame later.
+- `InFaction(Faction)` (`faction.rs`): a turret mounted on a ship inherits the root's faction automatically — that's how the same turret module serves both player and enemy ships. Turret targeting (`ship/turret.rs`) uses it to pick enemies.
+- `StructureRoot(Entity)` (`ship/mod.rs`): the ship-hull / station-root entity a part belongs to. Read it for O(1) structure membership instead of walking `ChildOf` and scanning every part each tick — used by the thrust solver, exhaust-blocking, and docking. **Because it lands a frame late, a just-built part is invisible to those systems for one frame (negligible).** Don't reintroduce a `root_of` ChildOf-walk in hot loops.
+
+### Ship flight (`src/movement.rs`) — faction-agnostic
+Flight is split so any ship (player or AI) flies the same way: a *controller* sets the ship's `ThrustControl` intent (-1/0/1 per axis) and adds the `Piloted` marker; the shared `drive_ships` solver turns intent + thrusters into motion for every `ShipBase`. `control_player_ship` is the only player-specific piece (keyboard → the player ship's `ThrustControl`); an enemy AI would set `ThrustControl` + `Piloted` on its ship instead. A `Piloted` ship auto-brakes toward rest (gated by opposing thrust); a non-`Piloted` ship coasts. `ThrustCommand` is the *effective* per-frame thrust (intent + auto-brake) the solver writes for nozzle visuals. All ships are excluded from `apply_movement_damping` — braking is thruster-gated, not free drag.
 
 ### Other modules
 `world.rs` spawns the world (station, ground) via `WorldPlugin`. `interaction.rs` — `Interactable` + consoles. `camera.rs` — follows player/ship; aligns to the ship in build mode. `action.rs`/`animation.rs`/`health.rs`/`character.rs` — combat, sprite animation, damage. `enemy.rs` builds an enemy ship through the shared module path.

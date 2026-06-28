@@ -4,7 +4,7 @@ use crate::{
     character::Character,
     faction::{Faction, InFaction},
     health::{self, Health},
-    ship::ShipBase,
+    ship::{ShipBase, StructureRoot, ThrustCommand, ThrustControl},
 };
 use avian2d::prelude::*;
 use bevy::{app::Propagate, prelude::*};
@@ -99,15 +99,24 @@ pub fn spawn_enemy_ship_base(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    commands
+    let ship_base = commands
         .spawn((
             ShipBase,
             Propagate(InFaction(Faction::Enemy)),
+            // Drivable by the same shared solver as the player ship; an AI sets the
+            // `ThrustControl` intent (and adds `Piloted`) — no flight code is
+            // player-specific.
+            ThrustControl::default(),
+            ThrustCommand::default(),
             RigidBody::Dynamic,
             Transform::from_xyz(-100., 0., 1.),
             Collider::from(rectangle),
             Mesh2d(meshes.add(rectangle)),
             MeshMaterial2d(materials.add(Color::srgb(1., 1., 0.))),
         ))
-        .id()
+        .id();
+    commands
+        .entity(ship_base)
+        .insert(Propagate(StructureRoot(ship_base)));
+    ship_base
 }

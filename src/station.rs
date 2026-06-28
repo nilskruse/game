@@ -1,7 +1,8 @@
 use avian2d::prelude::*;
-use bevy::prelude::*;
+use bevy::{app::Propagate, prelude::*};
 
 use crate::build::{build_buildable_side, mount, AttachSlot, ModuleKind, Mounted, UNIT};
+use crate::ship::StructureRoot;
 use crate::{interaction::spawn_console, world::WorldElement};
 
 /// Marker for a space station's root entity.
@@ -46,6 +47,11 @@ pub fn spawn_space_station(
             Visibility::default(),
         ))
         .id();
+    // Tag every part of the station with its root, so docking ports (and anything
+    // else) resolve their structure with an O(1) read instead of a hierarchy walk.
+    commands
+        .entity(station)
+        .insert(Propagate(StructureRoot(station)));
 
     let up = build_buildable_side(
         &mut commands,

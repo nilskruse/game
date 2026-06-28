@@ -27,7 +27,7 @@ use animation::{animate_sprite, set_animation_direction, set_animation_key, set_
 use avian2d::prelude::*;
 use bevy::{app::HierarchyPropagatePlugin, prelude::*};
 use character::Character;
-use movement::handle_input_ship;
+use movement::{control_player_ship, drive_ships};
 
 use crate::{
     camera::{move_camera, spawn_camera},
@@ -45,6 +45,9 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(HierarchyPropagatePlugin::<InFaction>::new(PostUpdate))
+        .add_plugins(HierarchyPropagatePlugin::<ship::StructureRoot>::new(
+            PostUpdate,
+        ))
         .add_plugins(PhysicsPlugins::default())
         .add_plugins(PhysicsDebugPlugin)
         .insert_resource(Gravity(Vec2::ZERO))
@@ -125,7 +128,8 @@ impl Plugin for Game {
         app.add_systems(
             RunFixedMainLoop,
             ((
-                handle_input_ship,
+                control_player_ship,
+                drive_ships,
                 start_actions,
                 set_animation_direction,
                 set_animation_type,

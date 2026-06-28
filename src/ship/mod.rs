@@ -39,15 +39,42 @@ pub struct ThrusterNozzle {
     pub exhaust: Vec2,
 }
 
-/// The thrust the pilot is currently commanding, in ship-local signs: each of
-/// `linear.x` / `linear.y` / `rotation` is -1, 0, or +1. Set every frame by
-/// `movement`; drives which thruster nozzles flare. Includes auto-braking (the
-/// opposing direction fires to slow the ship when there's no input).
+/// What a controller (the player, or an AI) wants the ship to do, in ship-local
+/// signs: each of `linear.x` / `linear.y` / `rotation` is -1, 0, or +1. This is the
+/// raw *intent* — a controller sets it (see `control_player_ship`), and the shared
+/// solver (`drive_ships`) turns it into motion for any ship regardless of faction.
+/// Auto-braking is the solver's job, not encoded here.
+#[derive(Component, Default)]
+pub struct ThrustControl {
+    pub linear: Vec2,
+    pub rotation: f32,
+}
+
+/// Marker on a ship root while a controller (player seated at its helm, or an AI)
+/// is actively driving it. The solver auto-brakes a `Piloted` ship toward rest when
+/// its [`ThrustControl`] is zero; an un-piloted ship (a drifting hulk) coasts.
+#[derive(Component)]
+pub struct Piloted;
+
+/// The thrust the ship is currently exerting, in ship-local signs: each of
+/// `linear.x` / `linear.y` / `rotation` is -1, 0, or +1. Computed every frame by the
+/// solver (`drive_ships`) from the [`ThrustControl`] intent *plus* auto-braking (the
+/// opposing direction fires to slow the ship when there's no input); drives which
+/// thruster nozzles flare.
 #[derive(Component, Default)]
 pub struct ThrustCommand {
     pub linear: Vec2,
     pub rotation: f32,
 }
+
+/// The root structure entity (ship hull or station root) a part belongs to.
+/// Propagated down each structure's hierarchy via `HierarchyPropagatePlugin` (set on
+/// the root as `Propagate(StructureRoot(root))`, like [`InFaction`](crate::faction::InFaction)),
+/// so systems resolve membership with an O(1) component read instead of walking the
+/// `ChildOf` chain and scanning every part in the world each tick. A freshly built
+/// part inherits it one frame later, when propagation next runs.
+#[derive(Component, Clone, PartialEq, Debug)]
+pub struct StructureRoot(pub Entity);
 
 /// Nozzle color when its exhaust is clear (the thrust direction works).
 pub const NOZZLE_OPEN: Color = Color::srgb(0.12, 0.12, 0.14);
@@ -106,6 +133,7 @@ pub fn spawn_player_ship_base(
             PlayerShip,
             Propagate(InFaction(Faction::Player)),
             ShipBase,
+            ThrustControl::default(),
             ThrustCommand::default(),
             RigidBody::Dynamic,
             Transform::from_xyz(100., 0., 0.),
@@ -114,6 +142,10 @@ pub fn spawn_player_ship_base(
             MeshMaterial2d(materials.add(Color::srgb(1., 1., 0.))),
         ))
         .id();
+    // Tag every part of this ship with its root, propagated down the hierarchy.
+    commands
+        .entity(ship_base)
+        .insert(Propagate(StructureRoot(ship_base)));
 
     let half = rectangle.half_size;
 
