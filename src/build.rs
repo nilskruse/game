@@ -31,6 +31,7 @@ impl Plugin for BuildPlugin {
                     update_ghost,
                     highlight_attach_points,
                     place_module,
+                    deconstruct_module,
                     update_build_text,
                     update_airlock_doors,
                 ),
@@ -38,8 +39,10 @@ impl Plugin for BuildPlugin {
     }
 }
 
-/// Open each airlock door whose port is docked, close it otherwise. Disabling the
-/// collider lets the player cross; re-enabling it seals the airlock in flight.
+/// Open each airlock barrier whose port is docked, close it otherwise. This covers
+/// both the visible door (which blocks the player) and the structural collider
+/// (which blocks other hulls) — disabling them lets two docked airlocks meet and
+/// the crew cross; re-enabling them re-seals the airlock in flight.
 fn update_airlock_doors(
     mut commands: Commands,
     ports: Query<&crate::docking::DockingPort>,
@@ -91,9 +94,16 @@ pub struct AttachPoint {
 #[derive(Component)]
 struct Ghost;
 
-/// A module that was built onto the ship.
+/// A module that was built onto a body, with what it needs to be deconstructed.
 #[derive(Component)]
-pub struct BuiltModule;
+pub struct BuiltModule {
+    /// Attach points on the parent body this module occupies (freed on removal).
+    points: Vec<Entity>,
+    /// Doorway panels this module opened (disabled), to re-seal on removal.
+    panels: Vec<Entity>,
+    /// Square footprint side length, for cursor hit-testing during removal.
+    extent: f32,
+}
 
 /// On-screen build-mode hint text.
 #[derive(Component)]
@@ -217,7 +227,7 @@ pub fn build_buildable_side(
     let sign = if horizontal { normal.y.signum() } else { normal.x.signum() };
     let base_perp = sign * perp;
     let edge_perp = sign * if horizontal { half.y } else { half.x };
-    let layers = CollisionLayers::new(GameLayer::Walls, [GameLayer::Player]);
+    let layers = CollisionLayers::new(GameLayer::Walls, [GameLayer::Player, GameLayer::Default]);
 
     // Slot centers along the side axis, evenly spaced and centered.
     let slots: Vec<f32> = (0..size)
@@ -554,13 +564,7 @@ fn place_module(
         return;
     };
 
-    // Rooms and docks open the covered hull doorways; solid modules stay sealed.
-    if kind.opens_doorway() {
-        for panel in &resolved.panels {
-            commands.entity(*panel).despawn();
-        }
-    }
-    spawn_module_at(
+    let module = spawn_module_at(
         &mut commands,
         resolved.body,
         resolved.local_center,
@@ -570,12 +574,84 @@ fn place_module(
         &mut materials,
     );
 
+    // Rooms and docks open the covered hull doorways (disable the panels so they
+    // can be re-sealed on removal); solid modules stay sealed.
+    let opened = if kind.opens_doorway() {
+        for panel in &resolved.panels {
+            commands
+                .entity(*panel)
+                .insert((ColliderDisabled, Visibility::Hidden));
+        }
+        resolved.panels.clone()
+    } else {
+        Vec::new()
+    };
+
+    commands.entity(module).insert(BuiltModule {
+        points: resolved.covered.clone(),
+        panels: opened,
+        extent: kind.extent(),
+    });
+
     for entity in resolved.covered {
         if let Ok((_, mut point, _)) = points.get_mut(entity) {
             point.occupied = true;
         }
     }
     clear_selection(&mut build, &mut commands);
+}
+
+/// In build mode with no module selected, left-click a built module to remove it:
+/// free the attach points it occupied, re-seal any doorways it opened, and despawn
+/// it (and anything built onto it).
+fn deconstruct_module(
+    mouse: Res<ButtonInput<MouseButton>>,
+    build: Res<BuildMode>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    mut commands: Commands,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    mut points: Query<&mut AttachPoint>,
+) {
+    if !build.active || build.selected.is_some() || !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(cursor) = cursor_world(&windows, &cameras) else {
+        return;
+    };
+
+    // The built module whose footprint is under the cursor (nearest center wins).
+    let mut hit: Option<(Entity, f32)> = None;
+    for (entity, module, gt) in &modules {
+        let local = gt.affine().inverse().transform_point3(cursor.extend(0.));
+        let h = module.extent / 2.;
+        if local.x.abs() <= h && local.y.abs() <= h {
+            let d = local.truncate().length();
+            if hit.map_or(true, |(_, best)| d < best) {
+                hit = Some((entity, d));
+            }
+        }
+    }
+    let Some((entity, _)) = hit else {
+        return;
+    };
+
+    let (occupied, panels) = {
+        let module = modules.get(entity).unwrap().1;
+        (module.points.clone(), module.panels.clone())
+    };
+    for point in occupied {
+        if let Ok(mut point) = points.get_mut(point) {
+            point.occupied = false;
+        }
+    }
+    for panel in panels {
+        commands
+            .entity(panel)
+            .remove::<ColliderDisabled>()
+            .insert(Visibility::Visible);
+    }
+    commands.entity(entity).despawn();
 }
 
 /// Spawn a module of `kind` as a child of `body`. `edge` is the body-local
@@ -590,17 +666,15 @@ fn spawn_module_at(
     kind: ModuleKind,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
-) {
+) -> Entity {
     if kind.is_dock() {
-        spawn_dock_module(commands, body, edge, direction, meshes, materials);
-        return;
+        return spawn_dock_module(commands, body, edge, direction, meshes, materials);
     }
 
     // Square modules center half their depth outside the edge.
     let center = edge + direction * (kind.extent() / 2.);
     if kind.walkable() {
-        spawn_module_room(commands, body, center, direction, kind, meshes, materials);
-        return;
+        return spawn_module_room(commands, body, center, direction, kind, meshes, materials);
     }
 
     let module = spawn_solid_module(commands, body, center, kind, meshes, materials);
@@ -612,6 +686,7 @@ fn spawn_module_at(
             .entity(turret)
             .insert(Transform::from_xyz(0., 0., 0.6));
     }
+    module
 }
 
 /// Occupy `slots` and mount a module of `kind` on them during construction. Lets
@@ -626,6 +701,8 @@ fn mount_preplaced(
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
     let mut sum = Vec2::ZERO;
+    let mut opened = Vec::new();
+    let mut occupied = Vec::new();
     for slot in slots {
         commands.entity(slot.entity).insert(AttachPoint {
             occupied: true,
@@ -635,12 +712,21 @@ fn mount_preplaced(
             door_panel: slot.panel,
         });
         if kind.opens_doorway() {
-            commands.entity(slot.panel).despawn();
+            commands
+                .entity(slot.panel)
+                .insert((ColliderDisabled, Visibility::Hidden));
+            opened.push(slot.panel);
         }
         sum += slot.local;
+        occupied.push(slot.entity);
     }
     let edge = sum / slots.len() as f32;
-    spawn_module_at(commands, body, edge, direction, kind, meshes, materials);
+    let module = spawn_module_at(commands, body, edge, direction, kind, meshes, materials);
+    commands.entity(module).insert(BuiltModule {
+        points: occupied,
+        panels: opened,
+        extent: kind.extent(),
+    });
 }
 
 /// Pre-mount a turret module on `slot` during ship construction.
@@ -681,7 +767,6 @@ fn spawn_solid_module(
     let rect = Rectangle::new(extent, extent);
     commands
         .spawn((
-            BuiltModule,
             ChildOf(body),
             Transform::from_xyz(center.x, center.y, 0.4),
             Collider::from(rect),
@@ -706,12 +791,11 @@ pub fn spawn_dock_module(
     direction: Vec2,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
-) {
+) -> Entity {
     let extent = UNIT;
     let center = edge + direction * (extent / 2.);
     let module = commands
         .spawn((
-            BuiltModule,
             ChildOf(body),
             Transform::from_xyz(center.x, center.y, 0.),
             Visibility::default(),
@@ -730,7 +814,7 @@ pub fn spawn_dock_module(
     // Solid walls on the two sides perpendicular to the entry/exit axis; both the
     // ship-facing and outward sides are left open.
     let half = extent / 2.;
-    let layers = CollisionLayers::new(GameLayer::Walls, [GameLayer::Player]);
+    let layers = CollisionLayers::new(GameLayer::Walls, [GameLayer::Player, GameLayer::Default]);
     for normal in [Vec2::Y, Vec2::NEG_Y, Vec2::X, Vec2::NEG_X] {
         if same_dir(normal, direction) || same_dir(normal, -direction) {
             continue;
@@ -784,6 +868,20 @@ pub fn spawn_dock_module(
         MeshMaterial2d(materials.add(DOOR_COLOR)),
         layers,
     ));
+
+    // Structural collider (default layer, like the hull) so the airlock is solid
+    // against other structures while flying — it blocks hulls but not the player.
+    // Tagged as an airlock barrier so it's disabled when docked, letting two
+    // airlocks meet at the interface without the solver shoving them apart.
+    commands.spawn((
+        AirlockDoor { port },
+        ChildOf(module),
+        Transform::from_xyz(0., 0., 0.),
+        Collider::from(Rectangle::new(extent, extent)),
+        Visibility::Visible,
+    ));
+
+    module
 }
 
 /// Spawn a walkable module room as a child of `body` at body-local `center`. Its
@@ -798,12 +896,11 @@ fn spawn_module_room(
     kind: ModuleKind,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
-) {
+) -> Entity {
     let size = kind.size_units();
     let extent = kind.extent();
     let module = commands
         .spawn((
-            BuiltModule,
             ChildOf(body),
             Transform::from_xyz(center.x, center.y, 0.),
             Visibility::default(),
@@ -827,6 +924,16 @@ fn spawn_module_room(
         }
         build_buildable_side(commands, module, half, size, normal, meshes, materials);
     }
+
+    // Structural collider (default layer, like the hull) so the room is solid
+    // against other structures. It blocks hulls but not the player.
+    commands.spawn((
+        ChildOf(module),
+        Transform::from_xyz(0., 0., 0.),
+        Collider::from(Rectangle::new(extent, extent)),
+    ));
+
+    module
 }
 
 fn update_build_text(build: Res<BuildMode>, mut text: Query<&mut Text, With<BuildText>>) {
@@ -837,7 +944,7 @@ fn update_build_text(build: Res<BuildMode>, mut text: Query<&mut Text, With<Buil
         "[B] Build mode".to_string()
     } else {
         match build.selected {
-            None => "BUILD MODE — select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock    ([B] exit)".to_string(),
+            None => "BUILD MODE — select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock   |  click a module to remove   ([B] exit)".to_string(),
             Some(kind) => format!(
                 "BUILD MODE — placing {} — click a highlighted attach point    ([B] exit)",
                 kind.name()

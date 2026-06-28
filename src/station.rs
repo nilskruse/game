@@ -294,7 +294,7 @@ fn spawn_solid_module(
             Collider::from(rect),
             Mesh2d(meshes.add(rect)),
             MeshMaterial2d(materials.add(color)),
-            CollisionLayers::new(GameLayer::Walls, [GameLayer::Player]),
+            CollisionLayers::new(GameLayer::Walls, [GameLayer::Player, GameLayer::Default]),
         ))
         .id();
 
@@ -369,6 +369,6 @@ fn spawn_wall_seg(
         Collider::from(rect),
         Mesh2d(meshes.add(rect)),
         MeshMaterial2d(materials.add(color)),
-        CollisionLayers::new(GameLayer::Walls, [GameLayer::Player]),
+        CollisionLayers::new(GameLayer::Walls, [GameLayer::Player, GameLayer::Default]),
     ));
 }
