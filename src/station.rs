@@ -3,7 +3,7 @@ use bevy::{app::Propagate, prelude::*};
 
 use crate::build::{build_buildable_side, mount, AttachSlot, ModuleKind, Mounted, UNIT};
 use crate::ship::StructureRoot;
-use crate::{interaction::spawn_console, world::WorldElement};
+use crate::world::WorldElement;
 
 /// Marker for a space station's root entity.
 #[derive(Component)]
@@ -12,14 +12,20 @@ pub struct SpaceStation;
 /// Floor color of the central hub (the station's root room).
 const HUB_FLOOR: Color = Color::srgb(0.30, 0.34, 0.42);
 
+/// The station's central hub is this many cells on a side.
+const HUB_SIZE: u32 = 10;
+/// Length (in hallway segments) of each docking arm reaching out from the hub.
+const ARM_SEGMENTS: u32 = 5;
+
 /// Build the player-accessible station entirely out of standard modules — the same
 /// kinds you can build onto a ship. A large central hub (a buildable body, like the
 /// ship base) has rooms, corridors, docking ports and equipment mounted onto its
 /// sides through the shared `mount` path, and modules chained onto those.
 ///
-/// It dwarfs the ship: a 6-wide hub with rows of cargo holds, long docking arms,
-/// and a bank of equipment — but built at the same `UNIT` scale, so a room is still
-/// a room you walk through.
+/// It dwarfs the ship: a wide hub (`HUB_SIZE`) with rows of cargo holds, long docking
+/// arms (`ARM_SEGMENTS`) and a bank of equipment — but built at the same `UNIT` scale,
+/// so a room is still a room you walk through. The per-side layout scales with the hub
+/// size rather than hard-coding slots.
 ///
 /// Built hierarchically (station hub -> module -> walls), mirroring the ship.
 pub fn spawn_space_station(
@@ -28,10 +34,10 @@ pub fn spawn_space_station(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    // Central hub: a size-6 square body, the backbone everything mounts onto. Like
-    // the ship base, its full-square collider blocks other hulls (not the player),
-    // and its buildable sides enclose a walkable room with doorways.
-    let hub_size = 6u32;
+    // Central hub: a large square body, the backbone everything mounts onto. Like the
+    // ship base, its full-square collider blocks other hulls (not the player), and its
+    // buildable sides enclose a walkable room with doorways.
+    let hub_size = HUB_SIZE;
     let extent = hub_size as f32 * UNIT;
     let half = Vec2::splat(extent / 2.);
     let rect = Rectangle::new(extent, extent);
@@ -90,154 +96,27 @@ pub fn spawn_space_station(
         materials,
     );
 
-    // North: a central cargo hold flanked by two long docking arms.
-    cargo(
+    // Three sides berth ships — a long docking arm at each corner with cargo holds
+    // filling the span between — and the east side is an equipment bank. This scales
+    // with `HUB_SIZE` rather than hard-coding slot indices.
+    holds_and_docks(&mut commands, station, &up, Vec2::Y, meshes, materials);
+    holds_and_docks(
         &mut commands,
         station,
-        &up[2],
-        &up[3],
-        Vec2::Y,
-        meshes,
-        materials,
-    );
-    corridor_dock(
-        &mut commands,
-        station,
-        &up[0],
-        Vec2::Y,
-        3,
-        meshes,
-        materials,
-    );
-    corridor_dock(
-        &mut commands,
-        station,
-        &up[5],
-        Vec2::Y,
-        3,
-        meshes,
-        materials,
-    );
-
-    // South: a bank of three cargo holds, with a docking arm chained off the middle.
-    cargo(
-        &mut commands,
-        station,
-        &down[0],
-        &down[1],
+        &down,
         Vec2::NEG_Y,
         meshes,
         materials,
     );
-    let mid_hold = cargo(
+    holds_and_docks(
         &mut commands,
         station,
-        &down[2],
-        &down[3],
-        Vec2::NEG_Y,
-        meshes,
-        materials,
-    );
-    cargo(
-        &mut commands,
-        station,
-        &down[4],
-        &down[5],
-        Vec2::NEG_Y,
-        meshes,
-        materials,
-    );
-    chain_corridor_dock(&mut commands, &mid_hold, Vec2::NEG_Y, 2, meshes, materials);
-
-    // West: two crew lounges and a docking arm between them.
-    cargo(
-        &mut commands,
-        station,
-        &left[0],
-        &left[1],
+        &left,
         Vec2::NEG_X,
         meshes,
         materials,
     );
-    cargo(
-        &mut commands,
-        station,
-        &left[4],
-        &left[5],
-        Vec2::NEG_X,
-        meshes,
-        materials,
-    );
-    corridor_dock(
-        &mut commands,
-        station,
-        &left[2],
-        Vec2::NEG_X,
-        2,
-        meshes,
-        materials,
-    );
-
-    // East: an equipment bank — engines, turrets and sensors (solid modules) — with
-    // access consoles in the hub fronting the engine and sensor blocks.
-    for slot in [&right[0], &right[1]] {
-        mount(
-            &mut commands,
-            station,
-            &[slot],
-            Vec2::X,
-            ModuleKind::Engine,
-            meshes,
-            materials,
-        );
-    }
-    for slot in [&right[2], &right[3]] {
-        let mounted = mount(
-            &mut commands,
-            station,
-            &[slot],
-            Vec2::X,
-            ModuleKind::Turret,
-            meshes,
-            materials,
-        );
-        crate::ship::turret::spawn_turret(
-            mounted.module,
-            crate::ship::turret::TurretKind::Cannon,
-            crate::ship::turret::FireArc::OverShip,
-            commands.reborrow(),
-            meshes,
-            materials,
-        );
-    }
-    for slot in [&right[4], &right[5]] {
-        mount(
-            &mut commands,
-            station,
-            &[slot],
-            Vec2::X,
-            ModuleKind::Sensor,
-            meshes,
-            materials,
-        );
-    }
-    let edge = half.x - 20.;
-    spawn_console(
-        station,
-        Vec2::new(edge, right[0].local.y),
-        "Engine",
-        commands.reborrow(),
-        meshes,
-        materials,
-    );
-    spawn_console(
-        station,
-        Vec2::new(edge, right[5].local.y),
-        "Sensors",
-        commands.reborrow(),
-        meshes,
-        materials,
-    );
+    equipment_bank(&mut commands, station, &right, Vec2::X, meshes, materials);
 
     // Engineering console in the hub: the hub is the station's engineering module;
     // interacting with this (E) opens build mode for the station.
@@ -296,24 +175,84 @@ fn corridor_dock(
     chain_corridor(commands, first, dir, segments - 1, meshes, materials);
 }
 
-/// As [`corridor_dock`], but chained onto an already-mounted module's far side.
-fn chain_corridor_dock(
+/// Populate one hub side for berthing: a docking arm at each end, with 2-wide cargo
+/// holds filling the slots between. Scales to any side width.
+fn holds_and_docks(
     commands: &mut Commands,
-    parent: &Mounted,
+    station: Entity,
+    slots: &[AttachSlot],
     dir: Vec2,
-    segments: u32,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
-    let first = mount_far(
+    let n = slots.len();
+    if n == 0 {
+        return;
+    }
+    corridor_dock(
         commands,
-        parent,
+        station,
+        &slots[0],
         dir,
-        ModuleKind::Hallway,
+        ARM_SEGMENTS,
         meshes,
         materials,
     );
-    chain_corridor(commands, first, dir, segments - 1, meshes, materials);
+    if n > 1 {
+        corridor_dock(
+            commands,
+            station,
+            &slots[n - 1],
+            dir,
+            ARM_SEGMENTS,
+            meshes,
+            materials,
+        );
+    }
+    // Cargo holds (each 2 wide) across the interior slots.
+    let mut i = 1;
+    while i < n.saturating_sub(2) {
+        cargo(
+            commands,
+            station,
+            &slots[i],
+            &slots[i + 1],
+            dir,
+            meshes,
+            materials,
+        );
+        i += 2;
+    }
+}
+
+/// Populate one hub side as an equipment bank: a repeating engine / turret / sensor
+/// pattern of solid modules across its slots (each turret gets an over-ship cannon).
+fn equipment_bank(
+    commands: &mut Commands,
+    station: Entity,
+    slots: &[AttachSlot],
+    dir: Vec2,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    for (i, slot) in slots.iter().enumerate() {
+        let kind = match i % 3 {
+            0 => ModuleKind::Engine,
+            1 => ModuleKind::Turret,
+            _ => ModuleKind::Sensor,
+        };
+        let mounted = mount(commands, station, &[slot], dir, kind, meshes, materials);
+        if kind == ModuleKind::Turret {
+            crate::ship::turret::spawn_turret(
+                mounted.module,
+                crate::ship::turret::TurretKind::Cannon,
+                crate::ship::turret::FireArc::OverShip,
+                commands.reborrow(),
+                meshes,
+                materials,
+            );
+        }
+    }
 }
 
 /// Extend `from` with `more` further hallways, then cap the end with a dock.

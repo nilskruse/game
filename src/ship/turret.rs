@@ -252,7 +252,7 @@ pub(crate) fn point_defense(
         &ChildOf,
         &StructureRoot,
     )>,
-    bullets: Query<(&GlobalTransform, &Bullet)>,
+    bullets: Query<(&Position, &Bullet)>,
     disabled: Query<(), With<ModuleDisabled>>,
     modules: Query<(Entity, &GlobalTransform, &BuiltModule, &StructureRoot)>,
     hulls: Query<(&GlobalTransform, &Collider), With<ShipBase>>,
@@ -270,12 +270,14 @@ pub(crate) fn point_defense(
 
         let pos = global.translation().xy();
         // Nearest incoming enemy projectile in range (with a clear line, if hull-arc).
+        // Read the bullet's physics `Position` (current) rather than its lagged
+        // `GlobalTransform`, so aim and intercepts line up with where it really is.
         let mut nearest: Option<(Vec2, f32)> = None;
-        for (bullet_gt, bullet) in &bullets {
+        for (bullet_pos, bullet) in &bullets {
             if bullet.faction == faction.0 {
                 continue; // our own side's shot
             }
-            let bullet_pos = bullet_gt.translation().xy();
+            let bullet_pos = bullet_pos.0;
             let dist = pos.distance(bullet_pos);
             if dist > PD_RANGE {
                 continue;
@@ -340,7 +342,7 @@ pub(crate) fn update_pd_slugs(
     time: Res<Time>,
     mut commands: Commands,
     mut slugs: Query<(Entity, &mut Transform, &PdSlug)>,
-    mut bullets: Query<(Entity, &GlobalTransform, &mut Bullet)>,
+    mut bullets: Query<(Entity, &Position, &mut Bullet)>,
 ) {
     let dt = time.delta_secs();
     for (slug_entity, mut transform, slug) in &mut slugs {
@@ -349,11 +351,11 @@ pub(crate) fn update_pd_slugs(
         let from = transform.translation.xy();
         let to = from + slug.velocity * dt;
         transform.translation = to.extend(transform.translation.z);
-        for (bullet_entity, bullet_gt, mut bullet) in &mut bullets {
+        for (bullet_entity, bullet_position, mut bullet) in &mut bullets {
             if bullet.faction == slug.faction {
                 continue; // our own side's projectile
             }
-            let bullet_pos = bullet_gt.translation().xy();
+            let bullet_pos = bullet_position.0;
             if point_segment_distance(bullet_pos, from, to) <= PD_HIT_RADIUS {
                 // A slug chips the projectile (and is spent); it only dies once worn
                 // down — a single hit no longer deletes it.

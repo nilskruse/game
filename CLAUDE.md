@@ -97,8 +97,10 @@ Each ship gets a floating health bar (`spawn_health_bars` / `update_health_bars`
 ### Effects (`src/effects.rs`)
 Small transient visuals. `Lifetime(Timer)` + `expire_lifetimes` despawn short-lived entities (PD slugs, sparks). `spawn_hit_spark(commands, pos, Hit)` spawns a flash sprite that grows and fades (`HitSpark` + `animate_hit_sparks`), with two looks so feedback is distinguishable: `Hit::Ship` (larger orange burst — a projectile struck a ship/character, from `bullet::on_bullet_hit`) vs `Hit::Intercept` (small cyan spark — point-defense struck an incoming projectile, from `update_pd_slugs`).
 
+Hit positions avoid `GlobalTransform` (propagated in `PostUpdate`, so it lags a frame and places the marker short of where a fast bullet actually is). The ship-hit spark uses avian's world-space contact point (`Collisions::get(bullet, other)` → first manifold point's `.point`) so it sits on the struck surface, falling back to the bullet's physics `Position`. PD aim/intercepts read the bullet's `Position`. Don't use `GlobalTransform` for projectile-hit placement.
+
 ### Other modules
-`world.rs` spawns the world (station, ground) via `WorldPlugin`. `interaction.rs` — `Interactable` + consoles. `camera.rs` — follows player/ship; aligns to the ship in build mode. `action.rs`/`animation.rs`/`health.rs`/`character.rs` — combat, sprite animation, damage. `enemy.rs` builds an enemy ship through the shared module path.
+`world.rs` spawns the world (station, ground) via `WorldPlugin`. `station.rs` builds the station parametrically from `HUB_SIZE`/`ARM_SEGMENTS` (each side filled by `holds_and_docks` or `equipment_bank`, scaling with the hub width — no hard-coded slot indices). `interaction.rs` — `Interactable` + consoles. `camera.rs` — follows player/ship and aligns to the ship in build mode; orthographic zoom eases between `WALK_ZOOM` (on foot, close) and `PILOT_ZOOM` (piloting/build, pulled back). `action.rs`/`animation.rs`/`health.rs`/`character.rs` — combat, sprite animation, damage. `enemy.rs` builds an enemy ship through the shared module path.
 
 ## Conventions
 

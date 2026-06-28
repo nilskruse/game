@@ -64,8 +64,9 @@ fn on_bullet_hit(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     invincible: Res<Invincible>,
+    collisions: Collisions,
     bullets: Query<&Bullet>,
-    transforms: Query<&GlobalTransform>,
+    positions: Query<&Position>,
     parents: Query<&ChildOf>,
     factions: Query<&InFaction>,
     built: Query<&BuiltModule>,
@@ -86,10 +87,15 @@ fn on_bullet_hit(
     let Ok(bullet) = bullets.get(bullet_entity) else {
         return;
     };
-    // Where the impact reads from — the bullet's position as it struck.
-    let hit_pos = transforms
-        .get(bullet_entity)
-        .map(|gt| gt.translation().xy())
+    // Place the impact on the struck surface: avian's world-space contact point if
+    // there is one, else the bullet's physics position (`GlobalTransform` lags a frame
+    // and would place the spark short of the hit).
+    let hit_pos = collisions
+        .get(bullet_entity, other)
+        .and_then(|pair| pair.manifolds.first())
+        .and_then(|manifold| manifold.points.first())
+        .map(|contact| contact.point)
+        .or_else(|| positions.get(bullet_entity).map(|p| p.0).ok())
         .unwrap_or_default();
 
     // Walk from the struck collider up to its module (first `ModuleHealth` ancestor),
