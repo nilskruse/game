@@ -28,6 +28,31 @@ pub(crate) struct AirlockDoor {
     port: Entity,
 }
 
+/// One free side of a freshly mounted module: its outward `direction` and the
+/// attach slots exposed along it, for chaining further modules.
+pub(crate) struct MountedSide {
+    pub(crate) direction: Vec2,
+    pub(crate) slots: Vec<AttachSlot>,
+}
+
+/// A module mounted onto a structure during construction, plus the sides it
+/// exposes. Solid and dock modules expose nothing. Returned by [`mount`] so code
+/// that assembles a structure (the station) can attach modules onto modules.
+pub(crate) struct Mounted {
+    pub(crate) module: Entity,
+    pub(crate) sides: Vec<MountedSide>,
+}
+
+impl Mounted {
+    /// The attach slots exposed on the side pointing `direction` (empty if none).
+    pub(crate) fn side(&self, direction: Vec2) -> &[AttachSlot] {
+        self.sides
+            .iter()
+            .find(|s| same_dir(s.direction, direction))
+            .map_or(&[], |s| &s.slots)
+    }
+}
+
 /// Open each airlock barrier whose port is docked, close it otherwise. This covers
 /// both the visible door (which blocks the player) and the structural collider
 /// (which blocks other hulls) — disabling them lets two docked airlocks meet and
@@ -64,8 +89,25 @@ pub(crate) fn spawn_module_at(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
+    spawn_module_sided(commands, body, edge, direction, kind, footprint, meshes, materials).module
+}
+
+/// Spawn a module and report the sides it exposes (see [`Mounted`]). Dispatches on
+/// kind: docking port (sensor collar, no exposed sides), walkable room, plain solid
+/// block, or a solid block with a turret on top (neither exposes sides).
+fn spawn_module_sided(
+    commands: &mut Commands,
+    body: Entity,
+    edge: Vec2,
+    direction: Vec2,
+    kind: ModuleKind,
+    footprint: Footprint,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) -> Mounted {
     if kind.is_dock() {
-        return spawn_dock_module(commands, body, edge, direction, meshes, materials);
+        let module = spawn_dock_module(commands, body, edge, direction, meshes, materials);
+        return Mounted { module, sides: Vec::new() };
     }
 
     // A module centers half its depth outside the edge.
@@ -83,12 +125,14 @@ pub(crate) fn spawn_module_at(
             .entity(turret)
             .insert(Transform::from_xyz(0., 0., 0.6));
     }
-    module
+    Mounted { module, sides: Vec::new() }
 }
 
-/// Occupy `slots` and mount a module of `kind` on them during construction. Lets
-/// ship setup reuse the same module path as click-to-build placement.
-fn mount_preplaced(
+/// Occupy `slots` on `body` and mount a module of `kind` across them, opening the
+/// covered doorways if the kind passes through. Returns the module and the sides it
+/// exposes (see [`Mounted`]). This is the construction-time counterpart to
+/// click-to-build placement, used to assemble the ship and station from modules.
+pub(crate) fn mount(
     commands: &mut Commands,
     body: Entity,
     slots: &[&AttachSlot],
@@ -96,7 +140,7 @@ fn mount_preplaced(
     kind: ModuleKind,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
-) {
+) -> Mounted {
     let footprint = kind.footprint();
     let mut sum = Vec2::ZERO;
     let mut opened = Vec::new();
@@ -119,12 +163,13 @@ fn mount_preplaced(
         occupied.push(slot.entity);
     }
     let edge = sum / slots.len() as f32;
-    let module = spawn_module_at(commands, body, edge, direction, kind, footprint, meshes, materials);
-    commands.entity(module).insert(BuiltModule {
+    let mounted = spawn_module_sided(commands, body, edge, direction, kind, footprint, meshes, materials);
+    commands.entity(mounted.module).insert(BuiltModule {
         points: occupied,
         panels: opened,
         size: footprint.world_size(direction),
     });
+    mounted
 }
 
 /// Pre-mount a turret module on `slot` during ship construction.
@@ -136,7 +181,7 @@ pub fn mount_preplaced_turret(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
-    mount_preplaced(commands, body, &[slot], direction, ModuleKind::Turret, meshes, materials);
+    mount(commands, body, &[slot], direction, ModuleKind::Turret, meshes, materials);
 }
 
 /// Pre-mount a docking-port module spanning `slots` during construction.
@@ -148,7 +193,7 @@ pub fn mount_preplaced_dock(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
-    mount_preplaced(commands, body, slots, direction, ModuleKind::Dock, meshes, materials);
+    mount(commands, body, slots, direction, ModuleKind::Dock, meshes, materials);
 }
 
 /// Attach a solid (non-walkable) module block. The hull doorway stays sealed and
@@ -298,7 +343,7 @@ fn spawn_module_room(
     footprint: Footprint,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
-) -> Entity {
+) -> Mounted {
     let size = footprint.world_size(direction);
     let half = size / 2.;
     let module = commands
@@ -318,6 +363,9 @@ fn spawn_module_room(
         MeshMaterial2d(materials.add(kind.color())),
     ));
 
+    // Record the buildable sides this room exposes (in module-local directions),
+    // so a structure assembler can chain further modules onto them.
+    let mut sides = Vec::new();
     for normal in [Vec2::Y, Vec2::NEG_Y, Vec2::X, Vec2::NEG_X] {
         if same_dir(normal, -direction) {
             // Open side facing the parent body.
@@ -325,10 +373,12 @@ fn spawn_module_room(
         }
         if same_dir(normal, direction) {
             // Outward end: always buildable, exposing `width` attach points.
-            build_buildable_side(commands, module, half, footprint.width, normal, meshes, materials);
+            let slots = build_buildable_side(commands, module, half, footprint.width, normal, meshes, materials);
+            sides.push(MountedSide { direction: normal, slots });
         } else if footprint.is_square() {
             // Long sides of a square room are buildable too (exposing `depth`).
-            build_buildable_side(commands, module, half, footprint.depth, normal, meshes, materials);
+            let slots = build_buildable_side(commands, module, half, footprint.depth, normal, meshes, materials);
+            sides.push(MountedSide { direction: normal, slots });
         } else {
             // Long sides of an elongated room are solid walls.
             spawn_solid_wall(commands, module, half, normal, meshes, materials);
@@ -343,7 +393,7 @@ fn spawn_module_room(
         Collider::from(Rectangle::new(size.x, size.y)),
     ));
 
-    module
+    Mounted { module, sides }
 }
 
 /// Spawn a single solid wall covering one full side of a module (half-extents
