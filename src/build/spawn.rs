@@ -4,7 +4,8 @@ use bevy::prelude::*;
 use crate::ship::GameLayer;
 
 use super::attach::{build_buildable_side, AttachPoint, AttachSlot};
-use super::kinds::{Footprint, ModuleKind};
+use super::kinds::ModuleKind;
+use super::registry::{ModuleDef, ModuleRegistry};
 use super::{same_dir, HULL, UNIT, WALL};
 
 /// Airlock door color (sealed bulkhead).
@@ -87,15 +88,11 @@ pub(crate) fn spawn_module_at(
     body: Entity,
     edge: Vec2,
     direction: Vec2,
-    kind: ModuleKind,
-    footprint: Footprint,
+    def: &ModuleDef,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    spawn_module_sided(
-        commands, body, edge, direction, kind, footprint, meshes, materials,
-    )
-    .module
+    spawn_module_sided(commands, body, edge, direction, def, meshes, materials).module
 }
 
 /// Spawn a module and report the sides it exposes (see [`Mounted`]). Dispatches on
@@ -106,12 +103,11 @@ fn spawn_module_sided(
     body: Entity,
     edge: Vec2,
     direction: Vec2,
-    kind: ModuleKind,
-    footprint: Footprint,
+    def: &ModuleDef,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Mounted {
-    if kind.is_dock() {
+    if def.is_dock() {
         let module = spawn_dock_module(commands, body, edge, direction, meshes, materials);
         return Mounted {
             module,
@@ -120,24 +116,20 @@ fn spawn_module_sided(
     }
 
     // A module centers half its depth outside the edge.
-    let center = edge + direction * (footprint.depth as f32 * UNIT / 2.);
-    if kind.walkable() {
-        let mounted = spawn_module_room(
-            commands, body, center, direction, kind, footprint, meshes, materials,
-        );
-        if kind.has_seat() {
+    let center = edge + direction * (def.footprint.depth as f32 * UNIT / 2.);
+    if def.walkable() {
+        let mounted = spawn_module_room(commands, body, center, direction, def, meshes, materials);
+        if def.has_seat() {
             spawn_pilot_seat(commands, mounted.module, meshes, materials);
         }
         return mounted;
     }
 
-    let module = spawn_solid_module(
-        commands, body, center, direction, kind, footprint, meshes, materials,
-    );
+    let module = spawn_solid_module(commands, body, center, direction, def, meshes, materials);
     // A turret module is just a bare mount here; a turret is installed into it
     // separately (see `mount_preplaced_turret` / build placement) so different turret
     // classes can go on the same module.
-    if let Some(spec) = kind.thruster(direction) {
+    if let Some(spec) = def.thruster_spec(direction) {
         spawn_thruster(commands, module, spec, meshes, materials);
     }
     Mounted {
@@ -193,10 +185,12 @@ pub(crate) fn mount(
     slots: &[&AttachSlot],
     direction: Vec2,
     kind: ModuleKind,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Mounted {
-    let footprint = kind.footprint();
+    let def = registry.module(kind);
+    let footprint = def.footprint;
     let mut sum = Vec2::ZERO;
     let mut opened = Vec::new();
     let mut occupied = Vec::new();
@@ -208,7 +202,7 @@ pub(crate) fn mount(
             direction,
             door_panel: slot.panel,
         });
-        if kind.opens_doorway() {
+        if def.opens_doorway() {
             commands
                 .entity(slot.panel)
                 .insert((ColliderDisabled, Visibility::Hidden));
@@ -218,10 +212,8 @@ pub(crate) fn mount(
         occupied.push(slot.entity);
     }
     let edge = sum / slots.len() as f32;
-    let mounted = spawn_module_sided(
-        commands, body, edge, direction, kind, footprint, meshes, materials,
-    );
-    let (hp, armor) = kind.durability();
+    let mounted = spawn_module_sided(commands, body, edge, direction, def, meshes, materials);
+    let (hp, armor) = def.durability;
     commands.entity(mounted.module).insert((
         BuiltModule {
             kind,
@@ -243,6 +235,7 @@ pub fn mount_preplaced_turret(
     direction: Vec2,
     kind: crate::ship::turret::TurretKind,
     arc: crate::ship::turret::FireArc,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -252,6 +245,7 @@ pub fn mount_preplaced_turret(
         &[slot],
         direction,
         ModuleKind::Turret,
+        registry,
         meshes,
         materials,
     );
@@ -271,6 +265,7 @@ pub fn mount_preplaced_dock(
     body: Entity,
     slots: &[&AttachSlot],
     direction: Vec2,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -280,6 +275,7 @@ pub fn mount_preplaced_dock(
         slots,
         direction,
         ModuleKind::Dock,
+        registry,
         meshes,
         materials,
     );
@@ -291,6 +287,7 @@ pub fn mount_preplaced_cockpit(
     body: Entity,
     slot: &AttachSlot,
     direction: Vec2,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -300,6 +297,7 @@ pub fn mount_preplaced_cockpit(
         &[slot],
         direction,
         ModuleKind::Cockpit,
+        registry,
         meshes,
         materials,
     );
@@ -330,12 +328,11 @@ fn spawn_solid_module(
     body: Entity,
     center: Vec2,
     direction: Vec2,
-    kind: ModuleKind,
-    footprint: Footprint,
+    def: &ModuleDef,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    let size = footprint.world_size(direction);
+    let size = def.footprint.world_size(direction);
     let rect = Rectangle::new(size.x, size.y);
     commands
         .spawn((
@@ -343,7 +340,7 @@ fn spawn_solid_module(
             Transform::from_xyz(center.x, center.y, 0.4),
             Collider::from(rect),
             Mesh2d(meshes.add(rect)),
-            MeshMaterial2d(materials.add(kind.color())),
+            MeshMaterial2d(materials.add(def.color)),
         ))
         .id()
 }
@@ -466,11 +463,11 @@ fn spawn_module_room(
     body: Entity,
     center: Vec2,
     direction: Vec2,
-    kind: ModuleKind,
-    footprint: Footprint,
+    def: &ModuleDef,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Mounted {
+    let footprint = def.footprint;
     let size = footprint.world_size(direction);
     let half = size / 2.;
     let module = commands
@@ -487,7 +484,7 @@ fn spawn_module_room(
         ChildOf(module),
         Transform::from_xyz(0., 0., -0.5),
         Mesh2d(meshes.add(floor)),
-        MeshMaterial2d(materials.add(kind.color())),
+        MeshMaterial2d(materials.add(def.color)),
     ));
 
     // Record the buildable sides this room exposes (in module-local directions),

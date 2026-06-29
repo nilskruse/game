@@ -438,6 +438,7 @@ pub(crate) fn player_weapons(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     build: Res<BuildMode>,
+    over_ui: Res<crate::ui::PointerOverUi>,
     pilots: Query<&Seated>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
@@ -456,8 +457,9 @@ pub(crate) fn player_weapons(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    // Only the piloted ship's guns, and not while building (left-click builds then).
-    if build.active {
+    // Only the piloted ship's guns, and not while building (left-click builds then),
+    // and not when the click landed on the UI.
+    if build.active || over_ui.0 {
         return;
     }
     let Some(seated) = pilots.iter().next() else {

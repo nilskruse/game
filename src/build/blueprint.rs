@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::attach::{AttachPoint, AttachSlot};
 use super::kinds::ModuleKind;
+use super::registry::ModuleRegistry;
 use super::spawn::BuiltModule;
 use super::{build_buildable_side, mount, same_dir, spawn_build_console};
 use crate::enemy::ShipAi;
@@ -233,6 +234,7 @@ pub(crate) fn build_structure(
     body: &BodyState,
     origin: Origin,
     instance: u64,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
@@ -290,6 +292,7 @@ pub(crate) fn build_structure(
             &picked,
             dir,
             spec.kind,
+            registry,
             meshes,
             materials,
         );
@@ -304,7 +307,7 @@ pub(crate) fn build_structure(
             );
         }
         // Restore durability (mount inserted a full one); disable if shot out.
-        let (max, armor) = spec.kind.durability();
+        let (max, armor) = registry.module(spec.kind).durability;
         commands.entity(mounted.module).insert(ModuleHealth {
             current: spec.health,
             max,

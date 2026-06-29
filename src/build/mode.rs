@@ -6,6 +6,7 @@ use crate::interaction::{Interactable, Interacted};
 
 use super::attach::AttachPoint;
 use super::kinds::{Footprint, ModuleKind};
+use super::registry::{ModuleDef, ModuleRegistry};
 use super::spawn::{spawn_module_at, BuiltModule};
 use super::{same_dir, UNIT};
 use crate::ship::turret::{FireArc, TurretKind};
@@ -72,8 +73,8 @@ impl BuildMode {
     }
 
     /// The footprint of the selected module, if any.
-    fn footprint(&self) -> Option<Footprint> {
-        self.selected.map(ModuleKind::footprint)
+    fn footprint(&self, registry: &ModuleRegistry) -> Option<Footprint> {
+        self.selected.map(|k| registry.module(k).footprint)
     }
 }
 
@@ -199,6 +200,10 @@ pub(crate) struct Ghost;
 #[derive(Component)]
 pub(crate) struct BuildText;
 
+/// The panel wrapping [`BuildText`]; shown only while build mode is active.
+#[derive(Component)]
+pub(crate) struct BuildPanel;
+
 /// Crosshair marking the edited structure's center of mass while building (handy
 /// since thruster rotation pivots around it).
 #[derive(Component)]
@@ -278,6 +283,7 @@ pub(crate) fn exit_build_mode(
 
 pub(crate) fn select_module(
     keyboard: Res<ButtonInput<KeyCode>>,
+    registry: Res<ModuleRegistry>,
     mut build: ResMut<BuildMode>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -320,8 +326,8 @@ pub(crate) fn select_module(
 
     clear_selection(&mut build, &mut commands);
 
-    let f = kind.footprint();
-    let ghost = spawn_ghost(&mut commands, kind, f, &mut meshes, &mut materials);
+    let def = registry.module(kind);
+    let ghost = spawn_ghost(&mut commands, def, &mut meshes, &mut materials);
     build.selected = Some(kind);
     build.facing = Vec2::Y;
     build.ghost = Some(ghost);
@@ -343,24 +349,24 @@ pub(crate) fn rotate_module(keyboard: Res<ButtonInput<KeyCode>>, mut build: ResM
 /// expose once placed (in the ghost's local frame; `+Y` is the outward edge).
 fn spawn_ghost(
     commands: &mut Commands,
-    kind: ModuleKind,
-    f: Footprint,
+    def: &ModuleDef,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
+    let f = def.footprint;
     let body = Rectangle::new(f.width as f32 * UNIT, f.depth as f32 * UNIT);
     let ghost = commands
         .spawn((
             Ghost,
             Transform::from_xyz(0., 0., 5.),
             Mesh2d(meshes.add(body)),
-            MeshMaterial2d(materials.add(kind.color().with_alpha(0.45))),
+            MeshMaterial2d(materials.add(def.color.with_alpha(0.45))),
         ))
         .id();
 
     let dot = meshes.add(Circle::new(8.));
     let dot_mat = materials.add(Color::srgba(0.3, 1.0, 0.4, 0.9));
-    for local in ghost_attach_points(kind, f) {
+    for local in ghost_attach_points(def) {
         commands.spawn((
             ChildOf(ghost),
             Transform::from_xyz(local.x, local.y, 0.1),
@@ -376,7 +382,8 @@ fn spawn_ghost(
 /// connecting side (`-Y`, every module) and, for walkable modules, the outward end
 /// (`+Y`). Side faces are left unmarked even though square modules stay buildable
 /// there.
-fn ghost_attach_points(kind: ModuleKind, f: Footprint) -> Vec<Vec2> {
+fn ghost_attach_points(def: &ModuleDef) -> Vec<Vec2> {
+    let f = def.footprint;
     let hy = f.depth as f32 * UNIT / 2.;
     let mut pts = Vec::new();
 
@@ -387,7 +394,7 @@ fn ghost_attach_points(kind: ModuleKind, f: Footprint) -> Vec<Vec2> {
     }
 
     // Outward end (only walkable modules expose it).
-    if kind.walkable() {
+    if def.walkable() {
         for i in 0..f.width {
             let x = ((i as f32) + 0.5 - f.width as f32 / 2.) * UNIT;
             pts.push(Vec2::new(x, hy));
@@ -399,6 +406,7 @@ fn ghost_attach_points(kind: ModuleKind, f: Footprint) -> Vec<Vec2> {
 
 pub(crate) fn update_ghost(
     build: Res<BuildMode>,
+    registry: Res<ModuleRegistry>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     points: Query<(Entity, &AttachPoint, &GlobalTransform)>,
@@ -410,7 +418,7 @@ pub(crate) fn update_ghost(
     if !build.active {
         return;
     }
-    let Some(footprint) = build.footprint() else {
+    let Some(footprint) = build.footprint(&registry) else {
         return;
     };
     let Some(cursor) = cursor_world(&windows, &cameras) else {
@@ -572,6 +580,7 @@ fn plan(infos: &[PointInfo], cursor: Vec2, size: u32, facing: Vec2) -> Option<Pl
 
 pub(crate) fn highlight_attach_points(
     build: Res<BuildMode>,
+    registry: Res<ModuleRegistry>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     mut points: Query<(
@@ -618,7 +627,7 @@ pub(crate) fn highlight_attach_points(
 
     let cam_rot = cam_rotation(&cameras);
     let covered: Vec<Entity> = build
-        .footprint()
+        .footprint(&registry)
         .zip(cursor_world(&windows, &cameras))
         .and_then(|(f, cursor)| {
             let query = snap_query(cursor, build.facing, f.depth, cam_rot);
@@ -653,6 +662,8 @@ pub(crate) fn highlight_attach_points(
 
 pub(crate) fn place_module(
     mouse: Res<ButtonInput<MouseButton>>,
+    over_ui: Res<crate::ui::PointerOverUi>,
+    registry: Res<ModuleRegistry>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     mut build: ResMut<BuildMode>,
@@ -664,15 +675,14 @@ pub(crate) fn place_module(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    if !build.active || !mouse.just_pressed(MouseButton::Left) {
+    if !build.active || over_ui.0 || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
     let Some(kind) = build.selected else {
         return;
     };
-    let Some(footprint) = build.footprint() else {
-        return;
-    };
+    let def = registry.module(kind);
+    let footprint = def.footprint;
     let Some(cursor) = cursor_world(&windows, &cameras) else {
         return;
     };
@@ -707,15 +717,14 @@ pub(crate) fn place_module(
         resolved.body,
         resolved.local_center,
         resolved.direction,
-        kind,
-        footprint,
+        def,
         &mut meshes,
         &mut materials,
     );
 
     // Rooms and docks open the covered hull doorways (disable the panels so they
     // can be re-sealed on removal); solid modules stay sealed.
-    let opened = if kind.opens_doorway() {
+    let opened = if def.opens_doorway() {
         for panel in &resolved.panels {
             commands
                 .entity(*panel)
@@ -726,7 +735,7 @@ pub(crate) fn place_module(
         Vec::new()
     };
 
-    let (hp, armor) = kind.durability();
+    let (hp, armor) = def.durability;
     commands.entity(module).insert((
         BuiltModule {
             kind,
@@ -738,7 +747,7 @@ pub(crate) fn place_module(
     ));
 
     // A turret module is a bare mount; install the currently selected turret.
-    if kind.mounts_turret() {
+    if def.mounts_turret {
         crate::ship::turret::spawn_turret(
             module,
             build.turret_kind,
@@ -762,6 +771,7 @@ pub(crate) fn place_module(
 /// it (and anything built onto it).
 pub(crate) fn deconstruct_module(
     mouse: Res<ButtonInput<MouseButton>>,
+    over_ui: Res<crate::ui::PointerOverUi>,
     build: Res<BuildMode>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
@@ -770,7 +780,11 @@ pub(crate) fn deconstruct_module(
     parents: Query<&ChildOf>,
     mut points: Query<&mut AttachPoint>,
 ) {
-    if !build.active || build.selected.is_some() || !mouse.just_pressed(MouseButton::Left) {
+    if !build.active
+        || over_ui.0
+        || build.selected.is_some()
+        || !mouse.just_pressed(MouseButton::Left)
+    {
         return;
     }
     let Some(cursor) = cursor_world(&windows, &cameras) else {
@@ -817,8 +831,17 @@ pub(crate) fn deconstruct_module(
 
 pub(crate) fn update_build_text(
     build: Res<BuildMode>,
+    registry: Res<ModuleRegistry>,
     mut text: Query<&mut Text, With<BuildText>>,
+    mut panel: Query<&mut Visibility, With<BuildPanel>>,
 ) {
+    if let Ok(mut vis) = panel.single_mut() {
+        *vis = if build.active {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
     let Ok(mut text) = text.single_mut() else {
         return;
     };
@@ -833,25 +856,35 @@ pub(crate) fn update_build_text(
             ),
             Some(kind) => format!(
                 "BUILD MODE — placing {} — click a highlighted attach point   ([R] rotate, [B]/[Esc] exit)",
-                kind.name()
+                registry.module(kind).name
             ),
         }
     };
     *text = Text::new(content);
 }
 
-pub(crate) fn spawn_build_ui(mut commands: Commands) {
-    commands.spawn((
-        BuildText,
-        Text::new(""),
-        TextColor(Color::srgb(0.8, 0.9, 1.0)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(10.),
-            top: Val::Px(10.),
-            ..default()
-        },
-    ));
+pub(crate) fn spawn_build_ui(mut commands: Commands, theme: Res<crate::ui::Theme>) {
+    commands
+        .spawn((
+            BuildPanel,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(10.),
+                top: Val::Px(10.),
+                max_width: Val::Percent(96.),
+                ..default()
+            },
+            GlobalZIndex(crate::ui::Z_HUD),
+            // Hidden until build mode opens (see `update_build_text`).
+            Visibility::Hidden,
+        ))
+        .with_children(|parent| {
+            parent
+                .spawn(crate::ui::panel(&theme))
+                .with_children(|panel| {
+                    panel.spawn((BuildText, crate::ui::label(&theme, "")));
+                });
+        });
 }
 
 /// Cursor position in world space, or `None` if the cursor is off-window.

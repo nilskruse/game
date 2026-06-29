@@ -3,10 +3,13 @@ use std::fs;
 
 use avian2d::prelude::*;
 use bevy::ecs::system::SystemParam;
+use bevy::picking::events::{Click, Pointer};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::build::{build_structure, extract_blueprint, AttachPoint, Blueprint, BuiltModule};
+use crate::build::{
+    build_structure, extract_blueprint, AttachPoint, Blueprint, BuiltModule, ModuleRegistry,
+};
 use crate::camera::CameraZoom;
 use crate::enemy::build_enemy_ship;
 use crate::health::{ModuleHealth, ShipHealth};
@@ -269,6 +272,7 @@ pub(crate) struct WorldEdit<'w, 's> {
     meshes: ResMut<'w, Assets<Mesh>>,
     materials: ResMut<'w, Assets<ColorMaterial>>,
     next: ResMut<'w, NextInstanceId>,
+    registry: Res<'w, ModuleRegistry>,
     zoom: ResMut<'w, CameraZoom>,
     camera_snap: ResMut<'w, crate::camera::CameraSnap>,
     pending_pilot: ResMut<'w, crate::player::PendingPilot>,
@@ -332,6 +336,7 @@ fn read_save_file(file: &mut SaveFile, op: &mut PersistOp) {
 pub(crate) fn load_structures(
     file: Res<SaveFile>,
     mut commands: Commands,
+    registry: Res<ModuleRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut next: ResMut<NextInstanceId>,
@@ -353,6 +358,7 @@ pub(crate) fn load_structures(
             &s.body,
             s.origin.clone(),
             s.instance_id,
+            &registry,
             &mut meshes,
             &mut materials,
         );
@@ -362,7 +368,7 @@ pub(crate) fn load_structures(
     let known: HashSet<&str> = chunk.known_content_ids.iter().map(String::as_str).collect();
     for &id in AUTHORED_CONTENT {
         if !known.contains(id) {
-            spawn_authored(id, &mut commands, &mut meshes, &mut materials);
+            spawn_authored(id, &registry, &mut commands, &mut meshes, &mut materials);
         }
     }
     info!(
@@ -386,6 +392,7 @@ fn new_game(edit: &mut WorldEdit) {
     for &id in AUTHORED_CONTENT {
         spawn_authored(
             id,
+            &edit.registry,
             &mut edit.commands,
             &mut edit.meshes,
             &mut edit.materials,
@@ -405,40 +412,31 @@ fn new_game(edit: &mut WorldEdit) {
 #[derive(Component)]
 pub(crate) struct NewGameButton;
 
-/// Spawn the "New Game" button in the top-right corner.
-pub(crate) fn spawn_new_game_button(mut commands: Commands) {
+/// Spawn the "New Game" button in the top-right corner, built from the UI toolkit.
+/// Its click observer resets to a fresh default world.
+pub(crate) fn spawn_new_game_button(mut commands: Commands, theme: Res<crate::ui::Theme>) {
     commands
         .spawn((
-            NewGameButton,
-            Button,
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(10.),
                 top: Val::Px(10.),
-                padding: UiRect::axes(Val::Px(10.), Val::Px(6.)),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.18, 0.18, 0.22)),
+            GlobalZIndex(crate::ui::Z_HUD),
         ))
         .with_children(|parent| {
-            parent.spawn((Text::new("New Game"), TextColor(Color::srgb(0.9, 0.9, 1.0))));
+            parent
+                .spawn((NewGameButton, crate::ui::button(&theme, "New Game")))
+                .observe(|_: On<Pointer<Click>>, mut edit: WorldEdit| new_game(&mut edit));
         });
-}
-
-/// Reset to a fresh default world when the "New Game" button is clicked.
-pub(crate) fn new_game_button(
-    buttons: Query<&Interaction, (Changed<Interaction>, With<NewGameButton>)>,
-    mut edit: WorldEdit,
-) {
-    if buttons.iter().any(|i| *i == Interaction::Pressed) {
-        new_game(&mut edit);
-    }
 }
 
 /// Spawn an authored structure by content id at its default state/position. Used to
 /// inject content added since a save was made. Keep in sync with [`AUTHORED_CONTENT`].
 fn spawn_authored(
     id: &str,
+    registry: &ModuleRegistry,
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
@@ -448,13 +446,20 @@ fn spawn_authored(
             spawn_player_ship_base(
                 Rectangle::new(150., 150.),
                 commands.reborrow(),
+                registry,
                 meshes,
                 materials,
             );
         }
-        "enemy_ship" => build_enemy_ship(commands, meshes, materials),
+        "enemy_ship" => build_enemy_ship(commands, registry, meshes, materials),
         "station" => {
-            spawn_space_station(Vec2::new(1200., 0.), commands.reborrow(), meshes, materials);
+            spawn_space_station(
+                Vec2::new(1200., 0.),
+                commands.reborrow(),
+                registry,
+                meshes,
+                materials,
+            );
         }
         other => warn!("unknown authored content id '{other}'"),
     }

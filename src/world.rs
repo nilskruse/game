@@ -75,6 +75,7 @@ fn build_world_block(
 /// working. We'll grow this as we add features.
 fn spawn_world(
     mut commands: Commands,
+    registry: Res<crate::build::ModuleRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
@@ -91,6 +92,7 @@ fn spawn_world(
     spawn_space_station(
         Vec2::new(1200., 0.),
         commands.reborrow(),
+        &registry,
         &mut meshes,
         &mut materials,
     );

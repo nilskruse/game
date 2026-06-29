@@ -1,7 +1,9 @@
 use avian2d::prelude::*;
 use bevy::{app::Propagate, prelude::*};
 
-use crate::build::{build_buildable_side, mount, AttachSlot, ModuleKind, Mounted, UNIT};
+use crate::build::{
+    build_buildable_side, mount, AttachSlot, ModuleKind, ModuleRegistry, Mounted, UNIT,
+};
 use crate::ship::StructureRoot;
 use crate::world::WorldElement;
 
@@ -31,6 +33,7 @@ const ARM_SEGMENTS: u32 = 5;
 pub fn spawn_space_station(
     position: Vec2,
     mut commands: Commands,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
@@ -100,12 +103,21 @@ pub fn spawn_space_station(
     // Three sides berth ships — a long docking arm at each corner with cargo holds
     // filling the span between — and the east side is an equipment bank. This scales
     // with `HUB_SIZE` rather than hard-coding slot indices.
-    holds_and_docks(&mut commands, station, &up, Vec2::Y, meshes, materials);
+    holds_and_docks(
+        &mut commands,
+        station,
+        &up,
+        Vec2::Y,
+        registry,
+        meshes,
+        materials,
+    );
     holds_and_docks(
         &mut commands,
         station,
         &down,
         Vec2::NEG_Y,
+        registry,
         meshes,
         materials,
     );
@@ -114,10 +126,19 @@ pub fn spawn_space_station(
         station,
         &left,
         Vec2::NEG_X,
+        registry,
         meshes,
         materials,
     );
-    equipment_bank(&mut commands, station, &right, Vec2::X, meshes, materials);
+    equipment_bank(
+        &mut commands,
+        station,
+        &right,
+        Vec2::X,
+        registry,
+        meshes,
+        materials,
+    );
 
     // Engineering console in the hub: the hub is the station's engineering module;
     // interacting with this (E) opens build mode for the station.
@@ -139,6 +160,7 @@ fn cargo(
     a: &AttachSlot,
     b: &AttachSlot,
     dir: Vec2,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Mounted {
@@ -148,6 +170,7 @@ fn cargo(
         &[a, b],
         dir,
         ModuleKind::Cargo,
+        registry,
         meshes,
         materials,
     )
@@ -161,6 +184,7 @@ fn corridor_dock(
     slot: &AttachSlot,
     dir: Vec2,
     segments: u32,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -170,10 +194,19 @@ fn corridor_dock(
         &[slot],
         dir,
         ModuleKind::Hallway,
+        registry,
         meshes,
         materials,
     );
-    chain_corridor(commands, first, dir, segments - 1, meshes, materials);
+    chain_corridor(
+        commands,
+        first,
+        dir,
+        segments - 1,
+        registry,
+        meshes,
+        materials,
+    );
 }
 
 /// Populate one hub side for berthing: a docking arm at each end, with 2-wide cargo
@@ -183,6 +216,7 @@ fn holds_and_docks(
     station: Entity,
     slots: &[AttachSlot],
     dir: Vec2,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -196,6 +230,7 @@ fn holds_and_docks(
         &slots[0],
         dir,
         ARM_SEGMENTS,
+        registry,
         meshes,
         materials,
     );
@@ -206,6 +241,7 @@ fn holds_and_docks(
             &slots[n - 1],
             dir,
             ARM_SEGMENTS,
+            registry,
             meshes,
             materials,
         );
@@ -219,6 +255,7 @@ fn holds_and_docks(
             &slots[i],
             &slots[i + 1],
             dir,
+            registry,
             meshes,
             materials,
         );
@@ -233,6 +270,7 @@ fn equipment_bank(
     station: Entity,
     slots: &[AttachSlot],
     dir: Vec2,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -242,7 +280,16 @@ fn equipment_bank(
             1 => ModuleKind::Turret,
             _ => ModuleKind::Sensor,
         };
-        let mounted = mount(commands, station, &[slot], dir, kind, meshes, materials);
+        let mounted = mount(
+            commands,
+            station,
+            &[slot],
+            dir,
+            kind,
+            registry,
+            meshes,
+            materials,
+        );
         if kind == ModuleKind::Turret {
             crate::ship::turret::spawn_turret(
                 mounted.module,
@@ -262,14 +309,31 @@ fn chain_corridor(
     from: Mounted,
     dir: Vec2,
     more: u32,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
     let mut tail = from;
     for _ in 0..more {
-        tail = mount_far(commands, &tail, dir, ModuleKind::Hallway, meshes, materials);
+        tail = mount_far(
+            commands,
+            &tail,
+            dir,
+            ModuleKind::Hallway,
+            registry,
+            meshes,
+            materials,
+        );
     }
-    mount_far(commands, &tail, dir, ModuleKind::Dock, meshes, materials);
+    mount_far(
+        commands,
+        &tail,
+        dir,
+        ModuleKind::Dock,
+        registry,
+        meshes,
+        materials,
+    );
 }
 
 /// Mount a module of `kind` onto the far (`direction`) side of an already-mounted
@@ -280,10 +344,11 @@ fn mount_far(
     parent: &Mounted,
     direction: Vec2,
     kind: ModuleKind,
+    registry: &ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Mounted {
-    let width = kind.footprint().width as usize;
+    let width = registry.module(kind).footprint.width as usize;
     let slots: Vec<&AttachSlot> = parent.side(direction).iter().take(width).collect();
     mount(
         commands,
@@ -291,6 +356,7 @@ fn mount_far(
         &slots,
         direction,
         kind,
+        registry,
         meshes,
         materials,
     )

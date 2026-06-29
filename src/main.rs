@@ -22,6 +22,7 @@ pub mod player;
 pub mod save;
 pub mod ship;
 pub mod station;
+pub mod ui;
 pub mod world;
 
 use action::{finish_actions, process_damage_area, start_actions};
@@ -75,6 +76,7 @@ fn main() {
         .add_plugins(WorldPlugin)
         .add_plugins(background::BackgroundPlugin)
         .add_plugins(build::BuildPlugin)
+        .add_plugins(ui::UiPlugin)
         .run();
 }
 
@@ -162,14 +164,7 @@ impl Plugin for Game {
                 save::PersistSet::Apply.run_if(save::loading),
             ),
         );
-        app.add_systems(
-            Update,
-            (
-                save::assign_instance_ids,
-                save::new_game_button,
-                apply_pending_pilot,
-            ),
-        );
+        app.add_systems(Update, (save::assign_instance_ids, apply_pending_pilot));
         // Save pipeline: request (F5) -> features capture their chunks -> write file.
         app.add_systems(
             Update,

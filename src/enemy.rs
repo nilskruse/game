@@ -69,10 +69,11 @@ pub fn spawn_enemy(
 /// Startup system: spawn the authored enemy ship.
 pub fn spawn_enemy_ship(
     mut commands: Commands,
+    registry: Res<crate::build::ModuleRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    build_enemy_ship(&mut commands, &mut meshes, &mut materials);
+    build_enemy_ship(&mut commands, &registry, &mut meshes, &mut materials);
 }
 
 /// Build the authored enemy ship (callable from startup and from save-load content
@@ -81,6 +82,7 @@ pub fn spawn_enemy_ship(
 /// for reverse, strafing and rotation. Built through the shared module path.
 pub(crate) fn build_enemy_ship(
     commands: &mut Commands,
+    registry: &crate::build::ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -97,6 +99,7 @@ pub(crate) fn build_enemy_ship(
         &[&bottom[MID]],
         Vec2::NEG_Y,
         ModuleKind::Engine,
+        registry,
         meshes,
         materials,
     );
@@ -111,6 +114,7 @@ pub(crate) fn build_enemy_ship(
             &[corner],
             Vec2::Y,
             ModuleKind::Thruster,
+            registry,
             meshes,
             materials,
         );
@@ -126,6 +130,7 @@ pub(crate) fn build_enemy_ship(
         Vec2::X,
         crate::ship::turret::TurretKind::Cannon,
         crate::ship::turret::FireArc::OverShip,
+        registry,
         meshes,
         materials,
     );

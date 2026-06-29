@@ -4,6 +4,7 @@ mod attach;
 mod blueprint;
 mod kinds;
 mod mode;
+mod registry;
 mod spawn;
 
 pub(crate) use attach::AttachPoint;
@@ -11,6 +12,7 @@ pub use attach::{build_buildable_side, AttachSlot};
 pub(crate) use blueprint::{build_structure, dump_blueprints, extract_blueprint, Blueprint};
 pub(crate) use kinds::ModuleKind;
 pub use mode::{spawn_build_console, BuildMode};
+pub use registry::ModuleRegistry;
 pub(crate) use spawn::{mount, BuiltModule, Mounted};
 pub use spawn::{
     mount_preplaced_cockpit, mount_preplaced_dock, mount_preplaced_turret, spawn_dock_module,
@@ -39,6 +41,9 @@ pub struct BuildPlugin;
 
 impl Plugin for BuildPlugin {
     fn build(&self, app: &mut App) {
+        // The module content registry, available to `Startup` spawners (ship/station/
+        // enemy) and the load path.
+        app.init_resource::<ModuleRegistry>();
         app.init_resource::<BuildMode>()
             .add_systems(Startup, (mode::spawn_build_ui, mode::spawn_com_marker))
             .add_systems(

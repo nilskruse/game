@@ -83,6 +83,7 @@ pub const NOZZLE_BLOCKED: Color = Color::srgb(0.65, 0.18, 0.14);
 
 pub fn spawn_player_ship(
     mut commands: Commands,
+    registry: Res<crate::build::ModuleRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
@@ -93,6 +94,7 @@ pub fn spawn_player_ship(
     spawn_player_ship_base(
         ship_rectangle,
         commands.reborrow(),
+        &registry,
         &mut meshes,
         &mut materials,
     );
@@ -125,6 +127,7 @@ pub enum GameLayer {
 pub fn spawn_player_ship_base(
     rectangle: Rectangle,
     mut commands: Commands,
+    registry: &crate::build::ModuleRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
@@ -178,6 +181,7 @@ pub fn spawn_player_ship_base(
         &[&bottom[MID]],
         Vec2::NEG_Y,
         crate::build::ModuleKind::Engine,
+        registry,
         meshes,
         materials,
     );
@@ -188,6 +192,7 @@ pub fn spawn_player_ship_base(
         Vec2::NEG_Y,
         crate::ship::turret::TurretKind::Cannon,
         crate::ship::turret::FireArc::OverShip,
+        registry,
         meshes,
         materials,
     );
@@ -211,6 +216,7 @@ pub fn spawn_player_ship_base(
         Vec2::Y,
         crate::ship::turret::TurretKind::PlayerCannon,
         crate::ship::turret::FireArc::Hull,
+        registry,
         meshes,
         materials,
     );
@@ -221,6 +227,7 @@ pub fn spawn_player_ship_base(
             &[corner],
             Vec2::Y,
             crate::build::ModuleKind::Thruster,
+            registry,
             meshes,
             materials,
         );
@@ -241,6 +248,7 @@ pub fn spawn_player_ship_base(
         ship_base,
         &right[MID],
         Vec2::X,
+        registry,
         meshes,
         materials,
     );
@@ -262,6 +270,7 @@ pub fn spawn_player_ship_base(
         ship_base,
         &[&left[MID]],
         Vec2::NEG_X,
+        registry,
         meshes,
         materials,
     );
@@ -272,6 +281,7 @@ pub fn spawn_player_ship_base(
         Vec2::NEG_X,
         crate::ship::turret::TurretKind::PointDefense,
         crate::ship::turret::FireArc::OverShip,
+        registry,
         meshes,
         materials,
     );
