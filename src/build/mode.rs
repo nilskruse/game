@@ -835,6 +835,11 @@ pub(crate) fn update_build_text(
     mut text: Query<&mut Text, With<BuildText>>,
     mut panel: Query<&mut Visibility, With<BuildPanel>>,
 ) {
+    // The hint only changes when build mode does (toggled, module/turret/arc/facing). Skip
+    // rebuilding the string (and forcing a text re-layout) on every other frame.
+    if !build.is_changed() {
+        return;
+    }
     if let Ok(mut vis) = panel.single_mut() {
         *vis = if build.active {
             Visibility::Visible

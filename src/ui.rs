@@ -170,6 +170,17 @@ pub fn window(theme: &Theme, title: impl Into<String>) -> impl Bundle {
     (panel(theme), children![heading(theme, title)])
 }
 
+/// Just the *visual* styling of a [`panel`] (surface + border color), for callers that
+/// build their own `Node` — e.g. an absolutely-positioned, full-height container that
+/// [`panel`]'s baked-in `Node` can't express. Set the `Node`'s `border` / `border_radius`
+/// yourself; [`panel`] is the ready-made version for ordinary content boxes.
+pub fn panel_style(theme: &Theme) -> impl Bundle {
+    (
+        BackgroundColor(theme.palette.surface),
+        BorderColor::all(theme.palette.border),
+    )
+}
+
 /// A clickable, themed button carrying [`ButtonColors`] so it gets automatic hover/press
 /// feedback. Attach behavior with `.observe(|_: On<Pointer<Click>>, ...| { ... })`.
 pub fn button(theme: &Theme, label: impl Into<String>) -> impl Bundle {

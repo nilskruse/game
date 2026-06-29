@@ -76,7 +76,16 @@ pub fn sync_ship_health(
     mut ships: Query<(Entity, &mut ShipHealth)>,
     modules: Query<(Entity, &ModuleHealth)>,
     parents: Query<&ChildOf>,
+    added_modules: Query<(), Added<ModuleHealth>>,
+    mut removed_modules: RemovedComponents<ModuleHealth>,
 ) {
+    // A ship's max-health capacity only moves when a module is built or removed/destroyed.
+    // Skip the full re-sum on the (overwhelming majority of) frames where the module set is
+    // unchanged, instead of walking every module for every ship each frame.
+    let removed_any = removed_modules.read().count() > 0;
+    if added_modules.is_empty() && !removed_any {
+        return;
+    }
     for (root, mut ship) in &mut ships {
         let new_max: f32 = modules
             .iter()

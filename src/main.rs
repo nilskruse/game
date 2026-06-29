@@ -17,6 +17,7 @@ pub mod enemy;
 pub mod faction;
 pub mod health;
 pub mod interaction;
+pub mod inventory;
 pub mod movement;
 pub mod player;
 pub mod save;
@@ -77,6 +78,7 @@ fn main() {
         .add_plugins(background::BackgroundPlugin)
         .add_plugins(build::BuildPlugin)
         .add_plugins(ui::UiPlugin)
+        .add_plugins(inventory::InventoryPlugin)
         .run();
 }
 
