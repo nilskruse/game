@@ -13,10 +13,6 @@ pub(crate) struct Footprint {
 }
 
 impl Footprint {
-    pub(crate) fn is_square(self) -> bool {
-        self.width == self.depth
-    }
-
     /// Axis-aligned world size of this footprint when it extends along `direction`
     /// (an axis-aligned unit): depth runs along `direction`, width across it.
     pub(crate) fn world_size(self, direction: Vec2) -> Vec2 {
@@ -56,9 +52,10 @@ pub(crate) const MANEUVER_THRUST: f32 = 14_000.;
 
 /// A thruster module's ship-local thrust capability (see [`ModuleKind::thruster`]).
 pub(crate) struct ThrusterSpec {
-    /// Push directions for motion. Each also steers the ship when the thruster sits
-    /// off the center of mass and pushes across it (decided geometrically in
-    /// `movement`), so a sideways engine mounted high turns the ship.
+    /// Push directions for motion. A *lateral* (±X) push also steers the ship when the
+    /// thruster sits off the center of mass (decided geometrically in `movement`), so a
+    /// sideways thruster mounted fore/aft turns the ship; forward/back (±Y) pushes never
+    /// steer, even mounted off-center.
     pub push: Vec<Vec2>,
     /// Thrust per direction.
     pub strength: f32,

@@ -481,40 +481,19 @@ fn spawn_module_room(
             // Open side facing the parent body.
             continue;
         }
-        if same_dir(normal, direction) {
-            // Outward end: always buildable, exposing `width` attach points.
-            let slots = build_buildable_side(
-                commands,
-                module,
-                half,
-                footprint.width,
-                normal,
-                meshes,
-                materials,
-            );
-            sides.push(MountedSide {
-                direction: normal,
-                slots,
-            });
-        } else if footprint.is_square() {
-            // Long sides of a square room are buildable too (exposing `depth`).
-            let slots = build_buildable_side(
-                commands,
-                module,
-                half,
-                footprint.depth,
-                normal,
-                meshes,
-                materials,
-            );
-            sides.push(MountedSide {
-                direction: normal,
-                slots,
-            });
+        // Every other side is buildable. The outward end exposes `width` attach points; the
+        // perpendicular (long) sides expose `depth` — so modules can branch off the flanks of
+        // an elongated room (e.g. a hallway), not just its ends.
+        let count = if same_dir(normal, direction) {
+            footprint.width
         } else {
-            // Long sides of an elongated room are solid walls.
-            spawn_solid_wall(commands, module, half, normal, meshes, materials);
-        }
+            footprint.depth
+        };
+        let slots = build_buildable_side(commands, module, half, count, normal, meshes, materials);
+        sides.push(MountedSide {
+            direction: normal,
+            slots,
+        });
     }
 
     // Structural collider (default layer, like the hull) so the room is solid
@@ -526,40 +505,4 @@ fn spawn_module_room(
     ));
 
     Mounted { module, sides }
-}
-
-/// Spawn a single solid wall covering one full side of a module (half-extents
-/// `half`), with outward `normal`. Used for the long sides of elongated rooms.
-fn spawn_solid_wall(
-    commands: &mut Commands,
-    module: Entity,
-    half: Vec2,
-    normal: Vec2,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<ColorMaterial>>,
-) {
-    // The side runs along x when its outward normal is vertical.
-    let horizontal = normal.x == 0.0;
-    let l = if horizontal { half.x } else { half.y };
-    let perp = (if horizontal { half.y } else { half.x }) - WALL / 2.;
-    let sign = if horizontal {
-        normal.y.signum()
-    } else {
-        normal.x.signum()
-    };
-    let base_perp = sign * perp;
-    let (wsize, wpos) = if horizontal {
-        (Vec2::new(2. * l, WALL), Vec2::new(0., base_perp))
-    } else {
-        (Vec2::new(WALL, 2. * l), Vec2::new(base_perp, 0.))
-    };
-    let rect = Rectangle::new(wsize.x, wsize.y);
-    commands.spawn((
-        ChildOf(module),
-        Collider::from(rect),
-        Transform::from_xyz(wpos.x, wpos.y, 0.),
-        Mesh2d(meshes.add(rect)),
-        MeshMaterial2d(materials.add(HULL)),
-        CollisionLayers::new(GameLayer::Walls, [GameLayer::Player, GameLayer::Default]),
-    ));
 }

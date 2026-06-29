@@ -25,7 +25,14 @@ const ROTATION_LEVER_MIN: f32 = 0.5 * UNIT;
 /// counter-clockwise, `-1` clockwise, `0` if it runs through (or near) the CoM and
 /// can't steer. Uses only the lever arm's *sign* past the minimum — no scaling by
 /// how far out it is (no leverage), just "off-center enough and pushing across".
+///
+/// `offset` and `push` are ship-local (the nose is `+Y`). A push along the ship's
+/// forward/back axis (`±Y`) never steers — only lateral (`±X`) pushes do — so a forward
+/// engine or thruster mounted off-center drives the ship straight instead of spinning it.
 fn rotation_sense(offset: Vec2, push: Vec2) -> f32 {
+    if push.y.abs() > 0.5 {
+        return 0.0;
+    }
     // Perpendicular offset (the lever arm); `push` is a unit vector.
     let lever = offset.x * push.y - offset.y * push.x;
     if lever > ROTATION_LEVER_MIN {

@@ -67,7 +67,10 @@ pub fn assign_instance_ids(
     new: Query<Entity, (With<Origin>, Without<InstanceId>)>,
 ) {
     for entity in &new {
-        commands.entity(entity).insert(InstanceId(next.0));
+        // `try_insert`: on the load frame this and `load_structures` both touch the default
+        // structures — they're queued for despawn here, so the insert may land after they're
+        // gone. Skip silently rather than panic (the rebuilt structures get their own ids).
+        commands.entity(entity).try_insert(InstanceId(next.0));
         next.0 += 1;
     }
 }

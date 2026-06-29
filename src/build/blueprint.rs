@@ -104,16 +104,20 @@ pub(crate) fn extract_blueprint(
         let Ok((_, built, _, _)) = modules.get(entity) else {
             continue;
         };
-        let parent = *index.get(&parent_of[&entity]).unwrap_or(&0);
-        let slots: Vec<[f32; 2]> = built
+        let parent_body = parent_of[&entity];
+        let parent = *index.get(&parent_body).unwrap_or(&0);
+        // Only points on the *parent* body describe how this module mounts. A bridged corridor
+        // also records the far body's points in `BuiltModule.points` (for teardown) — exclude
+        // those here, or the blueprint would carry slots from two bodies and fail to round-trip.
+        let parent_points: Vec<&AttachPoint> = built
             .points
             .iter()
-            .filter_map(|&p| attach.get(p).ok().map(|ap| ap.local.to_array()))
+            .filter_map(|&p| attach.get(p).ok())
+            .filter(|ap| ap.body == parent_body)
             .collect();
-        let dir = built
-            .points
+        let slots: Vec<[f32; 2]> = parent_points.iter().map(|ap| ap.local.to_array()).collect();
+        let dir = parent_points
             .first()
-            .and_then(|&p| attach.get(p).ok())
             .map(|ap| ap.direction.to_array())
             .unwrap_or([0.0, 1.0]);
         let turret = turrets
@@ -257,13 +261,21 @@ pub(crate) fn build_structure(
         ));
     }
 
-    // bodies[i] = (entity, sides) for blueprint body index i (0 = root).
-    let mut bodies: Vec<(Entity, Vec<(Vec2, Vec<AttachSlot>)>)> = vec![(root, root_sides)];
+    // bodies[i] = the entity + sides for blueprint body index i (0 = root); `None` for a
+    // module that couldn't be rebuilt. Indexed by body number — so a skipped module pushes
+    // `None` to keep later parents pointing at the right entity (a `continue` without a push
+    // would shift every subsequent index and mount onto the wrong/stale body).
+    let mut bodies: Vec<Option<(Entity, Vec<(Vec2, Vec<AttachSlot>)>)>> =
+        vec![Some((root, root_sides))];
 
     for spec in &blueprint.modules {
         let dir = Vec2::from_array(spec.dir);
-        let Some((parent_entity, parent_sides)) = bodies.get(spec.parent).cloned() else {
-            warn!("blueprint parent index {} out of range", spec.parent);
+        let Some(Some((parent_entity, parent_sides))) = bodies.get(spec.parent).cloned() else {
+            warn!(
+                "blueprint parent index {} missing; skipping module",
+                spec.parent
+            );
+            bodies.push(None);
             continue;
         };
         // The parent's slots on the matching side.
@@ -283,6 +295,7 @@ pub(crate) fn build_structure(
             .collect();
         if picked.len() != spec.slots.len() {
             warn!("blueprint: couldn't match all slots for a module; skipping");
+            bodies.push(None);
             continue;
         }
 
@@ -322,7 +335,7 @@ pub(crate) fn build_structure(
             .iter()
             .map(|s| (s.direction, s.slots.clone()))
             .collect();
-        bodies.push((mounted.module, sides));
+        bodies.push(Some((mounted.module, sides)));
     }
 
     root
