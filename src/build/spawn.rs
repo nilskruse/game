@@ -78,27 +78,13 @@ pub(crate) fn update_airlock_doors(
     }
 }
 
-/// Spawn a module of `kind` with the given `footprint` as a child of `body`.
-/// `edge` is the body-local midpoint of the covered attach points (on the hull
-/// edge); `direction` points outward. Dispatches on kind: docking port (thin
-/// sensor collar at the edge), walkable room, or a plain solid block (turret
-/// modules are solid blocks; the turret is installed separately).
-pub(crate) fn spawn_module_at(
-    commands: &mut Commands,
-    body: Entity,
-    edge: Vec2,
-    direction: Vec2,
-    def: &ModuleDef,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<ColorMaterial>>,
-) -> Entity {
-    spawn_module_sided(commands, body, edge, direction, def, meshes, materials).module
-}
-
-/// Spawn a module and report the sides it exposes (see [`Mounted`]). Dispatches on
-/// kind: docking port (sensor collar, no exposed sides), walkable room, or a plain
-/// solid block (solid blocks, including bare turret mounts, expose no sides).
-fn spawn_module_sided(
+/// Spawn a module as a child of `body` and report the sides it exposes (see [`Mounted`]).
+/// `edge` is the body-local midpoint of the covered attach points (on the hull edge);
+/// `direction` points outward. Dispatches on kind: docking port (sensor collar at the edge,
+/// no exposed sides), walkable room, or a plain solid block (solid blocks, including bare
+/// turret mounts, expose no sides). The exposed sides let the placement path claim a
+/// corridor's far doorway when bridging two modules.
+pub(crate) fn spawn_module_sided(
     commands: &mut Commands,
     body: Entity,
     edge: Vec2,

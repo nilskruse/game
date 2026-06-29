@@ -7,9 +7,9 @@ use crate::interaction::{Interactable, Interacted};
 use super::attach::AttachPoint;
 use super::kinds::{Footprint, ModuleKind};
 use super::registry::{ModuleDef, ModuleRegistry};
-use super::spawn::{spawn_module_at, BuiltModule};
+use super::spawn::{spawn_module_sided, BuiltModule};
 use super::{same_dir, UNIT};
-use crate::ship::turret::{FireArc, TurretKind};
+use crate::ship::turret::{spawn_turret, FireArc, Turret, TurretKind};
 
 /// How close (world units) the snap-test point must be to an attachment point.
 const SNAP: f32 = 35.;
@@ -40,13 +40,10 @@ pub struct BuildMode {
     /// are active. `None` when not building.
     structure: Option<Entity>,
     selected: Option<ModuleKind>,
-    /// Which turret is installed when placing a [`ModuleKind::Turret`] module: its
-    /// role (cycled with `T`) and firing arc (cycled with `Y`).
-    turret_kind: TurretKind,
-    turret_arc: FireArc,
-    /// Body-local outward direction the selected module extends in, set manually
-    /// with `R`. Always one of +Y / +X / -Y / -X. The module attaches only to a
-    /// side it faces.
+    /// Body-local outward direction for the *free-floating* ghost (when nothing snaps),
+    /// rotated with `R`. Always one of +Y / +X / -Y / -X. When near attach points the module
+    /// auto-orients to the nearest one (see [`plan_oriented`]), so this only sets the
+    /// preview's facing in open space.
     facing: Vec2,
     /// The ghost preview entity following the cursor, if a module is selected.
     ghost: Option<Entity>,
@@ -58,8 +55,6 @@ impl Default for BuildMode {
             active: false,
             structure: None,
             selected: None,
-            turret_kind: TurretKind::Cannon,
-            turret_arc: FireArc::Hull,
             facing: Vec2::Y,
             ghost: None,
         }
@@ -70,6 +65,12 @@ impl BuildMode {
     /// The structure (ship/station root) currently being edited, if in build mode.
     pub fn structure(&self) -> Option<Entity> {
         self.structure
+    }
+
+    /// Whether a module is currently selected for placement (its ghost follows the
+    /// cursor). Used to suppress the hover-inspect highlight while placing.
+    pub fn is_placing(&self) -> bool {
+        self.selected.is_some()
     }
 
     /// The footprint of the selected module, if any.
@@ -292,18 +293,6 @@ pub(crate) fn select_module(
     if !build.active {
         return;
     }
-    // Choose the turret to install when a turret module is selected: T toggles the
-    // role (cannon / point-defense), Y toggles the firing arc (over-ship / hull).
-    if build.selected == Some(ModuleKind::Turret) {
-        if keyboard.just_pressed(KeyCode::KeyT) {
-            build.turret_kind = build.turret_kind.next();
-            return;
-        }
-        if keyboard.just_pressed(KeyCode::KeyY) {
-            build.turret_arc = build.turret_arc.next();
-            return;
-        }
-    }
     let kind = if keyboard.just_pressed(KeyCode::Digit1) {
         ModuleKind::Cargo
     } else if keyboard.just_pressed(KeyCode::Digit2) {
@@ -446,13 +435,12 @@ pub(crate) fn update_ghost(
     };
     let facing = build.facing;
     // The camera is aligned to the ship in build mode, so its rotation gives the
-    // facing in world space (for the snap query and the free-drifting ghost).
+    // facing in world space (for the free-drifting ghost when nothing snaps).
     let cam_rot = cam_rotation(&cameras);
-    let query = snap_query(cursor, facing, footprint.depth, cam_rot);
 
-    // Resolve where the module would attach (only to a side it faces, and only on
-    // the structure being edited) and snap the ghost there: at the module's center,
-    // rotated so its outward edge points out.
+    // Resolve where the module would attach (auto-orienting to the nearest side, only on the
+    // structure being edited) and snap the ghost there: at the module's center, rotated so its
+    // outward edge points out.
     let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules, &parents);
     let infos: Vec<PointInfo> = points
         .iter()
@@ -472,7 +460,7 @@ pub(crate) fn update_ghost(
         })
         .collect();
 
-    let snapped = plan(&infos, query, footprint.width, facing).and_then(|p| {
+    let snapped = plan_oriented(&infos, cursor, footprint, cam_rot).and_then(|p| {
         let body_gt = bodies.get(p.body).ok()?;
         let depth = footprint.depth as f32 * UNIT;
         let center_local = p.local_center + p.direction * (depth / 2.);
@@ -598,6 +586,37 @@ fn plan(infos: &[PointInfo], cursor: Vec2, size: u32, facing: Vec2) -> Option<Pl
     })
 }
 
+/// Resolve placement letting the module orient to whichever side is nearest the cursor: run
+/// [`plan`] for all four facings (each with its own connecting-edge offset) and keep the
+/// closest hit. So the player doesn't have to manually rotate a module to match the target
+/// side — bringing it near any attach point connects it. Returns the chosen plan (whose
+/// `direction` is the resolved facing), or `None` if no side resolves.
+fn plan_oriented(
+    infos: &[PointInfo],
+    cursor: Vec2,
+    footprint: Footprint,
+    cam_rot: Quat,
+) -> Option<Plan> {
+    let mut best: Option<(f32, Plan)> = None;
+    for dir in [Vec2::Y, Vec2::NEG_Y, Vec2::X, Vec2::NEG_X] {
+        let query = snap_query(cursor, dir, footprint.depth, cam_rot);
+        let Some(p) = plan(infos, query, footprint.width, dir) else {
+            continue;
+        };
+        // Rank facings by how close the covered run sits to this facing's query.
+        let dist = p
+            .covered
+            .iter()
+            .filter_map(|e| infos.iter().find(|pi| pi.entity == *e))
+            .map(|pi| pi.world.distance(query))
+            .fold(f32::INFINITY, f32::min);
+        if best.as_ref().is_none_or(|(b, _)| dist < *b) {
+            best = Some((dist, p));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
 pub(crate) fn highlight_attach_points(
     build: Res<BuildMode>,
     registry: Res<ModuleRegistry>,
@@ -646,15 +665,25 @@ pub(crate) fn highlight_attach_points(
         .collect();
 
     let cam_rot = cam_rotation(&cameras);
-    let covered: Vec<Entity> = build
+    let mut covered: Vec<Entity> = Vec::new();
+    if let Some((f, cursor)) = build
         .footprint(&registry)
         .zip(cursor_world(&windows, &cameras))
-        .and_then(|(f, cursor)| {
-            let query = snap_query(cursor, build.facing, f.depth, cam_rot);
-            plan(&infos, query, f.width, build.facing)
-        })
-        .map(|p| p.covered)
-        .unwrap_or_default();
+    {
+        if let Some(near) = plan_oriented(&infos, cursor, f, cam_rot) {
+            covered.extend(near.covered.iter().copied());
+            // A walkable module that would bridge lights up its far end too, so it's clear
+            // both ends will connect.
+            let walkable = build
+                .selected
+                .is_some_and(|k| registry.module(k).walkable());
+            if walkable {
+                if let Some(far) = find_bridge(&infos, &near, f, &bodies) {
+                    covered.extend(far.covered);
+                }
+            }
+        }
+    }
 
     for (entity, point, gt, material, mut transform, mut vis) in &mut points {
         // Points on other structures stay hidden — you build one structure at a time.
@@ -723,12 +752,20 @@ fn try_place_module(
         .collect();
 
     let cam_rot = cam_rotation(cameras);
-    let query = snap_query(cursor, build.facing, footprint.depth, cam_rot);
-    let Some(resolved) = plan(&infos, query, footprint.width, build.facing) else {
+    let Some(resolved) = plan_oriented(&infos, cursor, footprint, cam_rot) else {
         return false;
     };
 
-    let module = spawn_module_at(
+    // A walkable module whose far end also reaches free, back-facing attach points connects
+    // at *both* ends — a corridor bridging two modules. Detected against the pre-placement
+    // point state, before spawning.
+    let bridge = if def.walkable() {
+        find_bridge(&infos, &resolved, footprint, bodies)
+    } else {
+        None
+    };
+
+    let mounted = spawn_module_sided(
         commands,
         resolved.body,
         resolved.local_center,
@@ -737,49 +774,100 @@ fn try_place_module(
         meshes,
         materials,
     );
+    let module = mounted.module;
 
-    // Rooms and docks open the covered hull doorways (disable the panels so they
-    // can be re-sealed on removal); solid modules stay sealed.
-    let opened = if def.opens_doorway() {
+    // Rooms and docks open the covered hull doorways (disable the panels so they can be
+    // re-sealed on removal); solid modules stay sealed. `occupied`/`opened` collect every
+    // existing attach point and panel this module claims — on the near body and, when
+    // bridging, the far one — so deconstruction restores both ends.
+    let mut occupied = resolved.covered.clone();
+    let mut opened = Vec::new();
+    if def.opens_doorway() {
         for panel in &resolved.panels {
             commands
                 .entity(*panel)
                 .insert((ColliderDisabled, Visibility::Hidden));
         }
-        resolved.panels.clone()
-    } else {
-        Vec::new()
-    };
+        opened.extend(resolved.panels.iter().copied());
+    }
+    if let Some(far) = &bridge {
+        // Open the far module's doorway and claim its points; open the corridor's own outward
+        // doorway and claim its points too, so the two meet walkable and the seam isn't
+        // offered as buildable. (The corridor's own points despawn with it, so they aren't
+        // recorded for restoration — only the far body's are.)
+        for panel in &far.panels {
+            commands
+                .entity(*panel)
+                .insert((ColliderDisabled, Visibility::Hidden));
+        }
+        opened.extend(far.panels.iter().copied());
+        occupied.extend(far.covered.iter().copied());
+        for side in &mounted.sides {
+            if !same_dir(side.direction, resolved.direction) {
+                continue;
+            }
+            for slot in &side.slots {
+                commands
+                    .entity(slot.panel)
+                    .insert((ColliderDisabled, Visibility::Hidden));
+                commands.entity(slot.entity).insert(AttachPoint {
+                    occupied: true,
+                    body: module,
+                    local: slot.local,
+                    direction: resolved.direction,
+                    door_panel: slot.panel,
+                });
+            }
+        }
+    }
 
     let (hp, armor) = def.durability;
     commands.entity(module).insert((
         BuiltModule {
             kind,
-            points: resolved.covered.clone(),
+            points: occupied.clone(),
             panels: opened,
             size: footprint.world_size(resolved.direction),
         },
         crate::health::ModuleHealth::new(hp, armor),
     ));
 
-    // A turret module is a bare mount; install the currently selected turret.
-    if def.mounts_turret {
-        crate::ship::turret::spawn_turret(
-            module,
-            build.turret_kind,
-            build.turret_arc,
-            commands.reborrow(),
-            meshes,
-            materials,
-        );
-    }
+    // A turret module is left as a bare mount — a turret is installed separately by
+    // dragging a turret item onto it (see `install_turret` / `inventory`).
 
-    for entity in resolved.covered {
+    for entity in occupied {
         if let Ok((_, mut point, _)) = points.get_mut(entity) {
             point.occupied = true;
         }
     }
     true
+}
+
+/// If `near` is the near-side attachment of a walkable module, look for a far-side
+/// attachment: free attach points facing back toward the module, one module-depth across the
+/// gap, so the module connects at *both* ends (a corridor between two modules). `None` when
+/// the far end is open space (ordinary one-sided placement). Reuses [`plan`] with the far
+/// edge as the query and the opposite facing.
+fn find_bridge(
+    infos: &[PointInfo],
+    near: &Plan,
+    footprint: Footprint,
+    bodies: &Query<&GlobalTransform>,
+) -> Option<Plan> {
+    let body_gt = bodies.get(near.body).ok()?;
+    let depth = footprint.depth as f32 * UNIT;
+    let near_edge = body_gt
+        .affine()
+        .transform_point3(near.local_center.extend(0.))
+        .xy();
+    let world_dir = body_gt
+        .affine()
+        .transform_vector3(near.direction.extend(0.))
+        .truncate()
+        .normalize_or_zero();
+    let far_query = near_edge + world_dir * depth;
+    // A genuine bridge spans to a *different* body.
+    plan(infos, far_query, footprint.width, -near.direction).filter(|f| f.body != near.body)
 }
 
 pub(crate) fn place_module(
@@ -854,9 +942,78 @@ pub(crate) fn drop_module(
     placed
 }
 
+/// Install a turret of `kind`/`arc` into the (empty) turret-mount module under the cursor,
+/// on the edited structure. Returns whether one was installed — for the inventory
+/// drag-a-turret-into-a-mount flow (see `inventory`). A turret mount is a
+/// [`ModuleKind::Turret`] module; "empty" means it has no `Turret` child yet.
+pub(crate) fn install_turret(
+    over_ui: bool,
+    kind: TurretKind,
+    arc: FireArc,
+    build: &BuildMode,
+    windows: &Query<&Window>,
+    cameras: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    children: &Query<&Children>,
+    turrets: &Query<(), With<Turret>>,
+    parents: &Query<&ChildOf>,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) -> bool {
+    if over_ui {
+        return false;
+    }
+    let Some(cursor) = cursor_world(windows, cameras) else {
+        return false;
+    };
+    // Nearest empty turret mount whose footprint is under the cursor, on the edited
+    // structure (mirrors `deconstruct_module`'s pick, filtered to empty turret mounts).
+    let mut hit: Option<(Entity, f32)> = None;
+    for (entity, module, gt) in modules {
+        if module.kind != ModuleKind::Turret
+            || Some(structure_root(entity, parents)) != build.structure
+        {
+            continue;
+        }
+        let has_turret = children
+            .get(entity)
+            .map(|kids| kids.iter().any(|child| turrets.contains(child)))
+            .unwrap_or(false);
+        if has_turret {
+            continue;
+        }
+        let local = gt.affine().inverse().transform_point3(cursor.extend(0.));
+        let h = module.size / 2.;
+        if local.x.abs() <= h.x && local.y.abs() <= h.y {
+            let d = local.truncate().length();
+            if hit.is_none_or(|(_, best)| d < best) {
+                hit = Some((entity, d));
+            }
+        }
+    }
+    let Some((module, _)) = hit else {
+        return false;
+    };
+    spawn_turret(module, kind, arc, commands.reborrow(), meshes, materials);
+    true
+}
+
+/// Emitted when a built module is deconstructed, so its parts can be refunded to an
+/// inventory. Targets the ship to credit (the player ship); carries plain data since the
+/// module entity is despawned. `turret` is the installed weapon, if the mount was armed.
+#[derive(EntityEvent)]
+pub(crate) struct ModuleDeconstructed {
+    #[event_target]
+    pub ship: Entity,
+    pub kind: ModuleKind,
+    pub turret: Option<(TurretKind, FireArc)>,
+}
+
 /// In build mode with no module selected, left-click a built module to remove it:
-/// free the attach points it occupied, re-seal any doorways it opened, and despawn
-/// it (and anything built onto it).
+/// free the attach points it occupied, re-seal any doorways it opened, despawn it (and
+/// anything built onto it), and refund its parts to the player ship's inventory (via
+/// [`ModuleDeconstructed`]).
 pub(crate) fn deconstruct_module(
     mouse: Res<ButtonInput<MouseButton>>,
     over_ui: Res<crate::ui::PointerOverUi>,
@@ -865,6 +1022,9 @@ pub(crate) fn deconstruct_module(
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     mut commands: Commands,
     modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    children: Query<&Children>,
+    turrets: Query<&Turret>,
+    players: Query<Entity, With<crate::ship::PlayerShip>>,
     parents: Query<&ChildOf>,
     mut points: Query<&mut AttachPoint>,
 ) {
@@ -899,10 +1059,15 @@ pub(crate) fn deconstruct_module(
         return;
     };
 
-    let (occupied, panels) = {
+    let (kind, occupied, panels) = {
         let module = modules.get(entity).unwrap().1;
-        (module.points.clone(), module.panels.clone())
+        (module.kind, module.points.clone(), module.panels.clone())
     };
+    // Capture an installed turret weapon (if this is an armed mount) so it's refunded too.
+    let turret = children.get(entity).ok().and_then(|kids| {
+        kids.iter()
+            .find_map(|child| turrets.get(child).ok().map(|t| (t.kind(), t.arc())))
+    });
     for point in occupied {
         if let Ok(mut point) = points.get_mut(point) {
             point.occupied = false;
@@ -915,6 +1080,12 @@ pub(crate) fn deconstruct_module(
             .insert(Visibility::Visible);
     }
     commands.entity(entity).despawn();
+
+    // Refund the module (and any turret) to the player ship's inventory — what the build
+    // window shows and what placement draws from (see `inventory::refund_deconstructed`).
+    if let Ok(ship) = players.single() {
+        commands.trigger(ModuleDeconstructed { ship, kind, turret });
+    }
 }
 
 pub(crate) fn update_build_text(
@@ -942,13 +1113,9 @@ pub(crate) fn update_build_text(
         String::new()
     } else {
         match build.selected {
-            None => "BUILD MODE — select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway  [7] Cockpit  [8] Thruster   |  click a module to remove   ([B]/[Esc] exit)".to_string(),
-            Some(ModuleKind::Turret) => format!(
-                "BUILD MODE — placing Turret [{} / {}] — click a highlighted attach point   ([T] kind, [Y] arc, [R] rotate, [B]/[Esc] exit)",
-                build.turret_kind.name(), build.turret_arc.name()
-            ),
+            None => "BUILD MODE - select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway  [7] Cockpit  [8] Thruster   |  click a module to remove, or drag a turret onto a turret mount   ([B]/[Esc] exit)".to_string(),
             Some(kind) => format!(
-                "BUILD MODE — placing {} — click a highlighted attach point   ([R] rotate, [B]/[Esc] exit)",
+                "BUILD MODE - placing {} - click a highlighted attach point   ([R] rotate, [B]/[Esc] exit)",
                 registry.module(kind).name
             ),
         }

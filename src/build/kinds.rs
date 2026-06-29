@@ -33,7 +33,7 @@ impl Footprint {
 /// The kinds of module that can be built onto a structure. This is just the stable
 /// **id** of a module type; all its data lives in its [`ModuleDef`](super::ModuleDef),
 /// looked up through the [`ModuleRegistry`](super::ModuleRegistry).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub(crate) enum ModuleKind {
     Cargo,
     Engine,

@@ -276,15 +276,26 @@ pub(crate) fn capture_player(
 pub(crate) fn apply_player(
     file: Res<SaveFile>,
     mut commands: Commands,
-    mut player: Query<(Entity, &mut Position), With<Player>>,
+    mut player: Query<(Entity, &mut Position, &mut Transform), With<Player>>,
     mut pending: ResMut<PendingPilot>,
 ) {
     let Some(saved) = file.read::<PlayerSave>("player") else {
         return;
     };
-    if let Ok((entity, mut pos)) = player.single_mut() {
-        pos.0 = Vec2::from_array(saved.pos);
+    if let Ok((entity, mut pos, mut transform)) = player.single_mut() {
+        let p = Vec2::from_array(saved.pos);
+        pos.0 = p;
+        // Also set `Transform`, not just the avian `Position`: at startup the player's body
+        // hasn't been initialized by the physics yet, and avian seeds `Position` from
+        // `Transform` on first init — which would otherwise clobber the line above back to
+        // the default-spawn transform, leaving the player outside the rebuilt ship. (In-game
+        // F9 loads were unaffected because the body was already initialized.)
+        transform.translation.x = p.x;
+        transform.translation.y = p.y;
         commands.entity(entity).remove::<Seated>();
+        // Drop carry state tied to the now-despawned ship so the carry rebuilds cleanly
+        // against the restored ship.
+        commands.entity(entity).insert(CarryState::default());
     }
     pending.0 = saved.piloting;
 }
