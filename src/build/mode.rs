@@ -324,10 +324,30 @@ pub(crate) fn select_module(
         return;
     };
 
-    clear_selection(&mut build, &mut commands);
+    begin_module_drag(
+        kind,
+        &mut build,
+        &registry,
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+    );
+}
 
+/// Select `kind` for placement and show its ghost (which then follows the cursor). Shared
+/// by keyboard selection ([`select_module`]) and the inventory drag-into-build start (see
+/// `inventory`).
+pub(crate) fn begin_module_drag(
+    kind: ModuleKind,
+    build: &mut BuildMode,
+    registry: &ModuleRegistry,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    clear_selection(build, commands);
     let def = registry.module(kind);
-    let ghost = spawn_ghost(&mut commands, def, &mut meshes, &mut materials);
+    let ghost = spawn_ghost(commands, def, meshes, materials);
     build.selected = Some(kind);
     build.facing = Vec2::Y;
     build.ghost = Some(ghost);
@@ -660,37 +680,33 @@ pub(crate) fn highlight_attach_points(
     }
 }
 
-pub(crate) fn place_module(
-    mouse: Res<ButtonInput<MouseButton>>,
-    over_ui: Res<crate::ui::PointerOverUi>,
-    registry: Res<ModuleRegistry>,
-    windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    mut build: ResMut<BuildMode>,
-    mut points: Query<(Entity, &mut AttachPoint, &GlobalTransform)>,
-    bodies: Query<&GlobalTransform>,
-    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: Query<&ChildOf>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    if !build.active || over_ui.0 || !mouse.just_pressed(MouseButton::Left) {
-        return;
-    }
+/// Place the build-selected module at `cursor` (world space) if an attach point on the
+/// edited structure resolves there. Returns whether a module was placed. The shared core
+/// of the click path ([`place_module`]) and the inventory drag-drop path ([`drop_module`]);
+/// neither clears the selection — the caller decides.
+fn try_place_module(
+    cursor: Vec2,
+    build: &BuildMode,
+    registry: &ModuleRegistry,
+    cameras: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    points: &mut Query<(Entity, &mut AttachPoint, &GlobalTransform)>,
+    bodies: &Query<&GlobalTransform>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    parents: &Query<&ChildOf>,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) -> bool {
     let Some(kind) = build.selected else {
-        return;
+        return false;
     };
     let def = registry.module(kind);
     let footprint = def.footprint;
-    let Some(cursor) = cursor_world(&windows, &cameras) else {
-        return;
-    };
 
-    let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules, &parents);
+    let (inv, footprints) = structure_blocking(build.structure, bodies, modules, parents);
     let infos: Vec<PointInfo> = points
         .iter()
-        .filter(|(entity, ..)| Some(structure_root(*entity, &parents)) == build.structure)
+        .filter(|(entity, ..)| Some(structure_root(*entity, parents)) == build.structure)
         .map(|(entity, point, gt)| {
             let world = gt.translation().xy();
             PointInfo {
@@ -706,20 +722,20 @@ pub(crate) fn place_module(
         })
         .collect();
 
-    let cam_rot = cam_rotation(&cameras);
+    let cam_rot = cam_rotation(cameras);
     let query = snap_query(cursor, build.facing, footprint.depth, cam_rot);
     let Some(resolved) = plan(&infos, query, footprint.width, build.facing) else {
-        return;
+        return false;
     };
 
     let module = spawn_module_at(
-        &mut commands,
+        commands,
         resolved.body,
         resolved.local_center,
         resolved.direction,
         def,
-        &mut meshes,
-        &mut materials,
+        meshes,
+        materials,
     );
 
     // Rooms and docks open the covered hull doorways (disable the panels so they
@@ -753,8 +769,8 @@ pub(crate) fn place_module(
             build.turret_kind,
             build.turret_arc,
             commands.reborrow(),
-            &mut meshes,
-            &mut materials,
+            meshes,
+            materials,
         );
     }
 
@@ -763,7 +779,79 @@ pub(crate) fn place_module(
             point.occupied = true;
         }
     }
-    clear_selection(&mut build, &mut commands);
+    true
+}
+
+pub(crate) fn place_module(
+    mouse: Res<ButtonInput<MouseButton>>,
+    over_ui: Res<crate::ui::PointerOverUi>,
+    registry: Res<ModuleRegistry>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    mut build: ResMut<BuildMode>,
+    mut points: Query<(Entity, &mut AttachPoint, &GlobalTransform)>,
+    bodies: Query<&GlobalTransform>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    parents: Query<&ChildOf>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    if !build.active || over_ui.0 || !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(cursor) = cursor_world(&windows, &cameras) else {
+        return;
+    };
+    // Clicking empty space keeps the selection (so you can try again); only a successful
+    // placement consumes it.
+    if try_place_module(
+        cursor,
+        &build,
+        &registry,
+        &cameras,
+        &mut points,
+        &bodies,
+        &modules,
+        &parents,
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+    ) {
+        clear_selection(&mut build, &mut commands);
+    }
+}
+
+/// Finish an inventory drag-into-build: place the selected module at the cursor (unless the
+/// release landed on the UI) and end the drag. Returns whether a module was placed, so the
+/// caller can consume the dragged item. See `inventory`.
+pub(crate) fn drop_module(
+    over_ui: bool,
+    build: &mut BuildMode,
+    registry: &ModuleRegistry,
+    windows: &Query<&Window>,
+    cameras: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    points: &mut Query<(Entity, &mut AttachPoint, &GlobalTransform)>,
+    bodies: &Query<&GlobalTransform>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    parents: &Query<&ChildOf>,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) -> bool {
+    let placed = if over_ui {
+        false
+    } else if let Some(cursor) = cursor_world(windows, cameras) {
+        try_place_module(
+            cursor, build, registry, cameras, points, bodies, modules, parents, commands, meshes,
+            materials,
+        )
+    } else {
+        false
+    };
+    // The drag is over whether or not it landed on a valid spot.
+    clear_selection(build, commands);
+    placed
 }
 
 /// In build mode with no module selected, left-click a built module to remove it:

@@ -11,6 +11,7 @@ pub(crate) use attach::AttachPoint;
 pub use attach::{build_buildable_side, AttachSlot};
 pub(crate) use blueprint::{build_structure, dump_blueprints, extract_blueprint, Blueprint};
 pub(crate) use kinds::ModuleKind;
+pub(crate) use mode::{begin_module_drag, drop_module};
 pub use mode::{spawn_build_console, BuildMode};
 pub use registry::ModuleRegistry;
 pub(crate) use spawn::{mount, BuiltModule, Mounted};
