@@ -4,7 +4,8 @@
 //!
 //! Deliberately a view-over-model: the window holds no item state, only renders
 //! [`Inventory::items`], and rebuilds when the model changes ([`rebuild_inventory_ui`]).
-//! Each slot entity carries an [`InventorySlot`] (its index into `items`), which the
+//! Each slot entity carries an [`InventorySlot`] (its container — the inventory-owning
+//! structure root — plus its index into that container's `items`), which the
 //! pointer observers use: **drag a module slot onto the ship in build mode to place it**
 //! (`on_slot_drag_*` → `build::drop_module`, consuming one from the stack), and **hover a
 //! slot to show its stats** in a side panel (`on_slot_hover_*` → [`StatFocus`] →
@@ -276,16 +277,18 @@ fn item_swatch(stack: &ItemStack, registry: &ModuleRegistry, theme: &Theme) -> C
 
 /// What the stat window shows. An inventory slot wins (the one being **dragged** if any,
 /// else the one **hovered**, via [`Self::target`]); failing that, a built **module** hovered
-/// in the world while in build mode (inspect/deconstruct).
+/// in the world while in build mode (inspect/deconstruct). Slots are addressed as
+/// `(container, index)` — the inventory-owning structure root plus the stack index —
+/// so the focus works for any container a window might show, not just the player ship.
 #[derive(Resource, Default)]
 struct StatFocus {
-    hovered: Option<usize>,
-    dragged: Option<usize>,
+    hovered: Option<(Entity, usize)>,
+    dragged: Option<(Entity, usize)>,
     module: Option<Entity>,
 }
 
 impl StatFocus {
-    fn target(&self) -> Option<usize> {
+    fn target(&self) -> Option<(Entity, usize)> {
         self.dragged.or(self.hovered)
     }
 }
@@ -501,10 +504,14 @@ struct InventoryWindow;
 #[derive(Component)]
 struct SlotContainer;
 
-/// A single item slot, tagging the model index it shows. The drag-into-build handlers read
-/// this to know which [`ItemStack`] is being dragged.
+/// A single item slot: the **container** (the structure root whose [`Inventory`] the
+/// window shows) plus the model index of the stack it displays. The pointer observers
+/// resolve the inventory through `container` rather than assuming the player ship, so
+/// a second window over another structure's inventory (trading, station cargo) reuses
+/// the same slots and handlers.
 #[derive(Component)]
 pub(crate) struct InventorySlot {
+    pub container: Entity,
     pub index: usize,
 }
 
@@ -684,7 +691,7 @@ fn rebuild_inventory_ui(
     mut prev_active: Local<bool>,
     registry: Res<ModuleRegistry>,
     theme: Res<Theme>,
-    inventories: Query<&Inventory, With<PlayerShip>>,
+    inventories: Query<(Entity, &Inventory), With<PlayerShip>>,
     changed: Query<(), (With<PlayerShip>, Changed<Inventory>)>,
     mut commands: Commands,
     container: Query<Entity, With<SlotContainer>>,
@@ -697,7 +704,7 @@ fn rebuild_inventory_ui(
     if !active_changed && changed.is_empty() {
         return;
     }
-    let Ok(inventory) = inventories.single() else {
+    let Ok((ship, inventory)) = inventories.single() else {
         return;
     };
     let Ok(container) = container.single() else {
@@ -717,7 +724,10 @@ fn rebuild_inventory_ui(
             }
             let swatch = item_swatch(stack, &registry, &theme);
             list.spawn((
-                InventorySlot { index },
+                InventorySlot {
+                    container: ship,
+                    index,
+                },
                 Node {
                     flex_direction: FlexDirection::Row,
                     align_items: AlignItems::Center,
@@ -767,7 +777,7 @@ fn rebuild_inventory_ui(
 fn on_slot_drag_start(
     mut event: On<Pointer<DragStart>>,
     slots: Query<&InventorySlot>,
-    inventories: Query<&Inventory, With<PlayerShip>>,
+    inventories: Query<&Inventory>,
     registry: Res<ModuleRegistry>,
     theme: Res<Theme>,
     mut build: ResMut<BuildMode>,
@@ -785,7 +795,7 @@ fn on_slot_drag_start(
     if !build.active {
         return;
     }
-    let Ok(inventory) = inventories.single() else {
+    let Ok(inventory) = inventories.get(slot.container) else {
         return;
     };
     let Some(stack) = inventory.items.get(slot.index) else {
@@ -809,7 +819,7 @@ fn on_slot_drag_start(
         ItemKind::Component | ItemKind::Trade => return,
     }
     // Show this item's stats for the duration of the drag.
-    focus.dragged = Some(slot.index);
+    focus.dragged = Some((slot.container, slot.index));
     // A cursor-following chip (on Z_DRAG, above the panel) so the dragged item is visible
     // over the inventory; `on_slot_drag` moves it, `on_slot_drag_end` despawns it.
     let pos = event.pointer_location.position;
@@ -867,7 +877,7 @@ fn on_slot_drag_end(
     over_ui: Res<PointerOverUi>,
     slots: Query<&InventorySlot>,
     chips: Query<Entity, With<DragChip>>,
-    mut inventories: Query<&mut Inventory, With<PlayerShip>>,
+    mut inventories: Query<&mut Inventory>,
     registry: Res<ModuleRegistry>,
     mut build: ResMut<BuildMode>,
     mut focus: ResMut<StatFocus>,
@@ -897,12 +907,12 @@ fn on_slot_drag_end(
     // Handle the slot once — see `on_slot_drag_start`. (The bubbling re-fires were what
     // double-despawned the chip above.)
     event.propagate(false);
-    let index = slot.index;
+    let (container, index) = (slot.container, slot.index);
     if !build.active {
         return;
     }
     let item_kind = inventories
-        .single()
+        .get(container)
         .ok()
         .and_then(|inv| inv.items.get(index).map(|stack| stack.kind));
     let Some(item_kind) = item_kind else {
@@ -943,9 +953,9 @@ fn on_slot_drag_end(
     if !placed {
         return;
     }
-    // Consume one of the installed item from the ship's inventory (the model mutation
+    // Consume one of the installed item from the slot's container (the model mutation
     // triggers `rebuild_inventory_ui`).
-    let Ok(mut inventory) = inventories.single_mut() else {
+    let Ok(mut inventory) = inventories.get_mut(container) else {
         return;
     };
     if let Some(stack) = inventory.items.get_mut(index) {
@@ -963,7 +973,7 @@ fn on_slot_drag_end(
 fn highlight_turret_mounts(
     build: Res<BuildMode>,
     focus: Res<StatFocus>,
-    inventories: Query<&Inventory, With<PlayerShip>>,
+    inventories: Query<&Inventory>,
     mut was_dragging: Local<bool>,
     mounts: Query<(Entity, &BuiltModule, &StructureRoot)>,
     children: Query<&Children>,
@@ -974,13 +984,15 @@ fn highlight_turret_mounts(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let dragging_turret = build.active
-        && match (focus.dragged, inventories.single()) {
-            (Some(index), Ok(inventory)) => inventory
-                .items
-                .get(index)
-                .is_some_and(|stack| matches!(stack.kind, ItemKind::Turret(..))),
-            _ => false,
-        };
+        && focus
+            .dragged
+            .and_then(|(container, index)| {
+                inventories
+                    .get(container)
+                    .ok()
+                    .and_then(|inv| inv.items.get(index))
+            })
+            .is_some_and(|stack| matches!(stack.kind, ItemKind::Turret(..)));
     if dragging_turret == *was_dragging {
         return;
     }
@@ -1121,8 +1133,8 @@ fn on_slot_hover_start(
         return;
     };
     event.propagate(false);
-    if focus.hovered != Some(slot.index) {
-        focus.hovered = Some(slot.index);
+    if focus.hovered != Some((slot.container, slot.index)) {
+        focus.hovered = Some((slot.container, slot.index));
     }
 }
 
@@ -1136,7 +1148,7 @@ fn on_slot_hover_end(
         return;
     };
     event.propagate(false);
-    if focus.hovered == Some(slot.index) {
+    if focus.hovered == Some((slot.container, slot.index)) {
         focus.hovered = None;
     }
 }
@@ -1148,7 +1160,7 @@ fn on_slot_hover_end(
 /// heading + one row per `Stat`.
 fn update_stat_window(
     focus: Res<StatFocus>,
-    inventories: Query<&Inventory, With<PlayerShip>>,
+    inventories: Query<&Inventory>,
     registry: Res<ModuleRegistry>,
     theme: Res<Theme>,
     built: Query<(
@@ -1183,10 +1195,12 @@ fn update_stat_window(
     }
 
     // An inventory item wins; otherwise show the hovered built module's stats + live health.
-    let item = match (focus.target(), inventories.single()) {
-        (Some(index), Ok(inventory)) => inventory.items.get(index),
-        _ => None,
-    };
+    let item = focus.target().and_then(|(container, index)| {
+        inventories
+            .get(container)
+            .ok()
+            .and_then(|inv| inv.items.get(index))
+    });
     let display: Option<(String, Vec<Stat>)> = if let Some(stack) = item {
         Some((stack.name.clone(), item_stats(stack, &registry)))
     } else if let Some((module, health, disabled, kids)) =
