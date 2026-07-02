@@ -14,11 +14,9 @@ pub(crate) use kinds::ModuleKind;
 pub(crate) use mode::{begin_module_drag, drop_module, install_turret, ModuleDeconstructed};
 pub use mode::{spawn_build_console, BuildMode, BuildState};
 pub(crate) use registry::ModuleDef;
-pub use registry::ModuleRegistry;
+pub(crate) use registry::ModuleRegistry;
 pub(crate) use spawn::{mount, BuiltModule, Mounted};
-pub use spawn::{
-    mount_preplaced_cockpit, mount_preplaced_dock, mount_preplaced_turret, spawn_dock_module,
-};
+pub(crate) use spawn::{mount_preplaced_cockpit, mount_preplaced_dock, mount_preplaced_turret};
 
 /// One size step in world units. A body of "size N" is `N * UNIT` on each side
 /// and exposes N attachment points per side.

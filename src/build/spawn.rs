@@ -175,7 +175,7 @@ pub(crate) fn mount(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Mounted {
-    let def = registry.module(kind);
+    let def = registry.get(kind);
     let footprint = def.footprint;
     let mut sum = Vec2::ZERO;
     let mut opened = Vec::new();
@@ -213,15 +213,15 @@ pub(crate) fn mount(
 }
 
 /// Pre-mount a turret module on `slot` during ship construction and install a turret
-/// of `kind`/`arc` into it.
-pub fn mount_preplaced_turret(
+/// of `kind` into it.
+pub(crate) fn mount_preplaced_turret(
     commands: &mut Commands,
     body: Entity,
     slot: &AttachSlot,
     direction: Vec2,
     kind: crate::ship::turret::TurretKind,
-    arc: crate::ship::turret::FireArc,
     registry: &ModuleRegistry,
+    turrets: &crate::ship::turret::TurretRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -238,7 +238,7 @@ pub fn mount_preplaced_turret(
     crate::ship::turret::spawn_turret(
         mounted.module,
         kind,
-        arc,
+        turrets,
         commands.reborrow(),
         meshes,
         materials,
@@ -246,7 +246,7 @@ pub fn mount_preplaced_turret(
 }
 
 /// Pre-mount a docking-port module spanning `slots` during construction.
-pub fn mount_preplaced_dock(
+pub(crate) fn mount_preplaced_dock(
     commands: &mut Commands,
     body: Entity,
     slots: &[&AttachSlot],
@@ -268,7 +268,7 @@ pub fn mount_preplaced_dock(
 }
 
 /// Pre-mount a cockpit module on `slot` during ship construction.
-pub fn mount_preplaced_cockpit(
+pub(crate) fn mount_preplaced_cockpit(
     commands: &mut Commands,
     body: Entity,
     slot: &AttachSlot,

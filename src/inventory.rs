@@ -24,7 +24,7 @@ use crate::build::{
 };
 use crate::health::{ModuleDisabled, ModuleHealth};
 use crate::save::{InstanceId, PersistSet, SaveFile};
-use crate::ship::turret::{FireArc, Turret, TurretKind};
+use crate::ship::turret::{Turret, TurretKind, TurretRegistry};
 use crate::ship::{PlayerShip, ShipBase, StructureRoot};
 use crate::station::SpaceStation;
 use crate::ui::{self, PointerOverUi, Theme};
@@ -94,8 +94,9 @@ pub(crate) enum ItemKind {
     /// A buildable ship module, identified by its [`ModuleKind`]. Build-relevant.
     Module(ModuleKind),
     /// A weapon turret, installed by dragging it onto a placed turret mount (a
-    /// [`ModuleKind::Turret`] module). Build-relevant.
-    Turret(TurretKind, FireArc),
+    /// [`ModuleKind::Turret`] module). Build-relevant. The kind alone identifies the
+    /// weapon; everything else (arc included) lives in its `TurretDef`.
+    Turret(TurretKind),
     /// A build material / part (placeholder until items have definitions). Build-relevant.
     Component,
     /// A general trade good / cargo (ore, supplies, loot). Not used in build mode.
@@ -123,11 +124,15 @@ struct Stat {
 /// The stats shown for an item. **This is the single, extensible place to add stats** —
 /// add a `Stat` line here (for modules, reading from its `ModuleDef`). Kept data-driven so
 /// new module data (or item definitions, once they exist) surface here with one line each.
-fn item_stats(stack: &ItemStack, registry: &ModuleRegistry) -> Vec<Stat> {
+fn item_stats(
+    stack: &ItemStack,
+    registry: &ModuleRegistry,
+    turret_defs: &TurretRegistry,
+) -> Vec<Stat> {
     let mut stats = Vec::new();
     match stack.kind {
         ItemKind::Module(kind) => {
-            let def = registry.module(kind);
+            let def = registry.get(kind);
             stats.push(Stat {
                 label: "Type",
                 value: format!("Module - {}", module_role(def)),
@@ -157,15 +162,30 @@ fn item_stats(stack: &ItemStack, registry: &ModuleRegistry) -> Vec<Stat> {
                 });
             }
         }
-        ItemKind::Turret(kind, arc) => {
+        ItemKind::Turret(kind) => {
+            let def = turret_defs.get(kind);
             stats.push(Stat {
                 label: "Type",
-                value: format!("Turret - {}", kind.name()),
+                value: format!("Turret - {}", def.name),
             });
             stats.push(Stat {
                 label: "Arc",
-                value: arc.name().to_string(),
+                value: def.arc.name().to_string(),
             });
+            stats.push(Stat {
+                label: "Fire rate",
+                value: format!("{:.1}/s", 1.0 / def.fire_interval),
+            });
+            stats.push(Stat {
+                label: "Damage",
+                value: format!("{:.0}", def.damage),
+            });
+            if def.range.is_finite() {
+                stats.push(Stat {
+                    label: "Range",
+                    value: format!("{:.0}", def.range),
+                });
+            }
         }
         ItemKind::Component => stats.push(Stat {
             label: "Type",
@@ -208,7 +228,7 @@ fn module_stats(
     has_turret: bool,
     registry: &ModuleRegistry,
 ) -> Vec<Stat> {
-    let def = registry.module(kind);
+    let def = registry.get(kind);
     let mut stats = vec![
         Stat {
             label: "Type",
@@ -269,14 +289,14 @@ fn module_stats(
 /// site that creates a turret stack (seeding, refunds) produces the same name, and
 /// stacking (which compares kind + name, see [`add_item`]) always merges identical
 /// turrets. Module item names are single-sourced the same way, through the registry.
-fn turret_item_name(kind: TurretKind) -> String {
-    format!("{} Turret", kind.name())
+fn turret_item_name(kind: TurretKind, turret_defs: &TurretRegistry) -> String {
+    format!("{} Turret", turret_defs.get(kind).name)
 }
 
 /// The slot swatch / drag-chip color for an item (module uses its build color).
 fn item_swatch(stack: &ItemStack, registry: &ModuleRegistry, theme: &Theme) -> Color {
     match stack.kind {
-        ItemKind::Module(kind) => registry.module(kind).color,
+        ItemKind::Module(kind) => registry.get(kind).color,
         ItemKind::Turret(..) => Color::srgb(0.75, 0.7, 0.5),
         ItemKind::Component => theme.palette.accent,
         ItemKind::Trade => theme.palette.text_dim,
@@ -337,6 +357,7 @@ fn attach_inventory<C: Component>(add: On<Add, C>, mut commands: Commands) {
 fn seed_player_inventory(
     mut ships: Query<&mut Inventory, (Added<Inventory>, With<PlayerShip>)>,
     registry: Res<ModuleRegistry>,
+    turret_defs: Res<TurretRegistry>,
 ) {
     let Ok(mut inventory) = ships.single_mut() else {
         return;
@@ -351,7 +372,7 @@ fn seed_player_inventory(
     for (kind, count) in modules {
         inventory.items.push(ItemStack {
             kind: ItemKind::Module(kind),
-            name: registry.module(kind).name.to_string(),
+            name: registry.get(kind).name.to_string(),
             count,
         });
     }
@@ -363,13 +384,10 @@ fn seed_player_inventory(
         });
     }
     // Turrets — installed by dragging onto a placed turret mount.
-    for (kind, arc, count) in [
-        (TurretKind::Cannon, FireArc::OverShip, 2),
-        (TurretKind::PointDefense, FireArc::OverShip, 1),
-    ] {
+    for (kind, count) in [(TurretKind::Cannon, 2), (TurretKind::PointDefense, 1)] {
         inventory.items.push(ItemStack {
-            kind: ItemKind::Turret(kind, arc),
-            name: turret_item_name(kind),
+            kind: ItemKind::Turret(kind),
+            name: turret_item_name(kind, &turret_defs),
             count,
         });
     }
@@ -389,6 +407,7 @@ fn seed_player_inventory(
 fn refund_deconstructed(
     event: On<ModuleDeconstructed>,
     registry: Res<ModuleRegistry>,
+    turret_defs: Res<TurretRegistry>,
     mut inventories: Query<&mut Inventory>,
 ) {
     let Ok(mut inventory) = inventories.get_mut(event.ship) else {
@@ -397,13 +416,13 @@ fn refund_deconstructed(
     add_item(
         &mut inventory,
         ItemKind::Module(event.kind),
-        registry.module(event.kind).name.to_string(),
+        registry.get(event.kind).name.to_string(),
     );
-    if let Some((kind, arc)) = event.turret {
+    if let Some(kind) = event.turret {
         add_item(
             &mut inventory,
-            ItemKind::Turret(kind, arc),
-            turret_item_name(kind),
+            ItemKind::Turret(kind),
+            turret_item_name(kind, &turret_defs),
         );
     }
 }
@@ -432,7 +451,7 @@ fn add_item(inventory: &mut Inventory, kind: ItemKind, name: String) {
 fn same_item(a: ItemKind, b: ItemKind) -> bool {
     match (a, b) {
         (ItemKind::Module(x), ItemKind::Module(y)) => x == y,
-        (ItemKind::Turret(k1, a1), ItemKind::Turret(k2, a2)) => k1 == k2 && a1 == a2,
+        (ItemKind::Turret(x), ItemKind::Turret(y)) => x == y,
         (ItemKind::Component, ItemKind::Component) => true,
         (ItemKind::Trade, ItemKind::Trade) => true,
         _ => false,
@@ -919,6 +938,7 @@ struct DropCtx<'w, 's> {
     >,
     children: Query<'w, 's, &'static Children>,
     turrets: Query<'w, 's, (), With<Turret>>,
+    turret_defs: Res<'w, TurretRegistry>,
 }
 
 /// Finish dragging an item: a **module** is placed at the cursor (`build::drop_module`,
@@ -978,11 +998,11 @@ fn on_slot_drag_end(
             &mut ctx.meshes,
             &mut ctx.materials,
         ),
-        ItemKind::Turret(kind, arc) => install_turret(
+        ItemKind::Turret(kind) => install_turret(
             over_ui.0,
             kind,
-            arc,
             &build,
+            &ctx.turret_defs,
             &ctx.windows,
             &ctx.cameras,
             &ctx.modules,
@@ -1180,6 +1200,7 @@ fn update_stat_window(
     focus: Res<StatFocus>,
     inventories: Query<&Inventory>,
     registry: Res<ModuleRegistry>,
+    turret_defs: Res<TurretRegistry>,
     theme: Res<Theme>,
     built: Query<(
         &BuiltModule,
@@ -1220,12 +1241,15 @@ fn update_stat_window(
             .and_then(|inv| inv.items.get(index))
     });
     let display: Option<(String, Vec<Stat>)> = if let Some(stack) = item {
-        Some((stack.name.clone(), item_stats(stack, &registry)))
+        Some((
+            stack.name.clone(),
+            item_stats(stack, &registry, &turret_defs),
+        ))
     } else if let Some((module, health, disabled, kids)) =
         focus.module.and_then(|m| built.get(m).ok())
     {
         let has_turret = kids.is_some_and(|kids| kids.iter().any(|c| turrets.contains(c)));
-        let name = registry.module(module.kind).name.to_string();
+        let name = registry.get(module.kind).name.to_string();
         Some((
             name,
             module_stats(module.kind, health, disabled, has_turret, &registry),

@@ -4,11 +4,10 @@
 //!
 //! The **definition vs instance** split: a placed module is the *instance* (an entity
 //! carrying `BuiltModule` + `ModuleHealth`), while a [`ModuleDef`] is its *definition*
-//! (stats + behavior category). Definitions live in the [`ModuleRegistry`] resource,
-//! built once at startup from [`module_defs`]. Later the registry can be populated from
-//! asset files instead, without touching any consumer — they all go through `module()`.
-
-use std::collections::HashMap;
+//! (stats + behavior category). Definitions live in the [`ModuleRegistry`] resource —
+//! an alias of the generic [`Registry`](crate::registry::Registry) container — built
+//! once at startup from [`module_defs`]. Later the registry can be populated from
+//! asset files instead, without touching any consumer — they all go through `get()`.
 
 use bevy::prelude::*;
 
@@ -96,26 +95,12 @@ impl ModuleDef {
 }
 
 /// The module content registry: every [`ModuleDef`] keyed by [`ModuleKind`]. Inserted
-/// at app build (so it's available to `Startup` spawners); query with [`Self::module`].
-#[derive(Resource)]
-pub struct ModuleRegistry {
-    defs: HashMap<ModuleKind, ModuleDef>,
-}
-
-impl ModuleRegistry {
-    /// The definition for `kind`. Every [`ModuleKind`] has one (panics otherwise, which
-    /// would be a registry-construction bug).
-    pub(crate) fn module(&self, kind: ModuleKind) -> &ModuleDef {
-        self.defs
-            .get(&kind)
-            .expect("every ModuleKind has a ModuleDef")
-    }
-}
+/// at app build (so it's available to `Startup` spawners); query with `get(kind)`.
+pub(crate) type ModuleRegistry = crate::registry::Registry<ModuleKind, ModuleDef>;
 
 impl Default for ModuleRegistry {
     fn default() -> Self {
-        let defs = module_defs().into_iter().map(|d| (d.kind, d)).collect();
-        Self { defs }
+        Self::new(module_defs().into_iter().map(|d| (d.kind, d)))
     }
 }
 

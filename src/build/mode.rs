@@ -9,7 +9,7 @@ use super::kinds::{Footprint, ModuleKind};
 use super::registry::{ModuleDef, ModuleRegistry};
 use super::spawn::{spawn_module_sided, BuiltModule};
 use super::{same_dir, UNIT};
-use crate::ship::turret::{spawn_turret, FireArc, Turret, TurretKind};
+use crate::ship::turret::{spawn_turret, Turret, TurretKind, TurretRegistry};
 use crate::ship::StructureRoot;
 
 /// How close (world units) the snap-test point must be to an attachment point.
@@ -86,7 +86,7 @@ impl BuildMode {
 
     /// The footprint of the selected module, if any.
     fn footprint(&self, registry: &ModuleRegistry) -> Option<Footprint> {
-        self.selected.map(|k| registry.module(k).footprint)
+        self.selected.map(|k| registry.get(k).footprint)
     }
 }
 
@@ -355,7 +355,7 @@ pub(crate) fn begin_module_drag(
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
     clear_selection(build, commands);
-    let def = registry.module(kind);
+    let def = registry.get(kind);
     let ghost = spawn_ghost(commands, def, meshes, materials);
     build.selected = Some(kind);
     build.facing = Vec2::Y;
@@ -684,9 +684,7 @@ pub(crate) fn highlight_attach_points(
             covered.extend(near.covered.iter().copied());
             // A walkable module that would bridge lights up its far end too, so it's clear
             // both ends will connect.
-            let walkable = build
-                .selected
-                .is_some_and(|k| registry.module(k).walkable());
+            let walkable = build.selected.is_some_and(|k| registry.get(k).walkable());
             if walkable {
                 if let Some(far) = find_bridge(&infos, &near, f, &bodies) {
                     covered.extend(far.covered);
@@ -738,7 +736,7 @@ fn try_place_module(
     let Some(kind) = build.selected else {
         return false;
     };
-    let def = registry.module(kind);
+    let def = registry.get(kind);
     let footprint = def.footprint;
 
     let (inv, footprints) = structure_blocking(build.structure, bodies, modules);
@@ -947,15 +945,15 @@ pub(crate) fn drop_module(
     placed
 }
 
-/// Install a turret of `kind`/`arc` into the (empty) turret-mount module under the cursor,
+/// Install a turret of `kind` into the (empty) turret-mount module under the cursor,
 /// on the edited structure. Returns whether one was installed — for the inventory
 /// drag-a-turret-into-a-mount flow (see `inventory`). A turret mount is a
 /// [`ModuleKind::Turret`] module; "empty" means it has no `Turret` child yet.
 pub(crate) fn install_turret(
     over_ui: bool,
     kind: TurretKind,
-    arc: FireArc,
     build: &BuildMode,
+    turret_defs: &TurretRegistry,
     windows: &Query<&Window>,
     cameras: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
@@ -997,7 +995,14 @@ pub(crate) fn install_turret(
     let Some((module, _)) = hit else {
         return false;
     };
-    spawn_turret(module, kind, arc, commands.reborrow(), meshes, materials);
+    spawn_turret(
+        module,
+        kind,
+        turret_defs,
+        commands.reborrow(),
+        meshes,
+        materials,
+    );
     true
 }
 
@@ -1009,7 +1014,7 @@ pub(crate) struct ModuleDeconstructed {
     #[event_target]
     pub ship: Entity,
     pub kind: ModuleKind,
-    pub turret: Option<(TurretKind, FireArc)>,
+    pub turret: Option<TurretKind>,
 }
 
 /// In build mode with no module selected, left-click a built module to remove it:
@@ -1063,7 +1068,7 @@ pub(crate) fn deconstruct_module(
     // Capture an installed turret weapon (if this is an armed mount) so it's refunded too.
     let turret = children.get(entity).ok().and_then(|kids| {
         kids.iter()
-            .find_map(|child| turrets.get(child).ok().map(|t| (t.kind(), t.arc())))
+            .find_map(|child| turrets.get(child).ok().map(|t| t.kind()))
     });
     for point in occupied {
         if let Ok(mut point) = points.get_mut(point) {
@@ -1104,7 +1109,7 @@ pub(crate) fn update_build_text(
         None => "BUILD MODE - select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway  [7] Cockpit  [8] Thruster   |  click a module to remove, or drag a turret onto a turret mount   ([B]/[Esc] exit)".to_string(),
         Some(kind) => format!(
             "BUILD MODE - placing {} - click a highlighted attach point   ([R] rotate, [B]/[Esc] exit)",
-            registry.module(kind).name
+            registry.get(kind).name
         ),
     };
     *text = Text::new(content);

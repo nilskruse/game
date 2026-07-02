@@ -17,7 +17,7 @@ use crate::enemy::ShipAi;
 use crate::faction::{Faction, InFaction};
 use crate::health::{ModuleDisabled, ModuleHealth, ShipHealth};
 use crate::save::{BodyState, Origin};
-use crate::ship::turret::{spawn_turret, FireArc, Turret, TurretKind};
+use crate::ship::turret::{spawn_turret, Turret, TurretKind, TurretRegistry};
 use crate::ship::{PlayerShip, ShipBase, StructureRoot, ThrustCommand, ThrustControl};
 use crate::station::SpaceStation;
 use crate::world::WorldElement;
@@ -44,8 +44,9 @@ pub struct ModuleSpec {
     /// on rebuild).
     pub slots: Vec<[f32; 2]>,
     pub kind: ModuleKind,
-    /// Turret installed on it (only for turret modules).
-    pub turret: Option<(TurretKind, FireArc)>,
+    /// Turret installed on it (only for turret modules). The kind alone identifies the
+    /// weapon — everything else (arc included) comes from its def on rebuild.
+    pub turret: Option<TurretKind>,
     /// Current module durability.
     pub health: f32,
 }
@@ -123,7 +124,7 @@ pub(crate) fn extract_blueprint(
         let turret = turrets
             .iter()
             .find(|(child_of, _)| child_of.parent() == entity)
-            .map(|(_, t)| (t.kind(), t.arc()));
+            .map(|(_, t)| t.kind());
         let health = healths.get(entity).map(|h| h.current).unwrap_or(0.0);
         specs.push(ModuleSpec {
             parent,
@@ -239,6 +240,7 @@ pub(crate) fn build_structure(
     origin: Origin,
     instance: u64,
     registry: &ModuleRegistry,
+    turrets: &TurretRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
@@ -309,18 +311,18 @@ pub(crate) fn build_structure(
             meshes,
             materials,
         );
-        if let Some((turret_kind, arc)) = spec.turret {
+        if let Some(turret_kind) = spec.turret {
             spawn_turret(
                 mounted.module,
                 turret_kind,
-                arc,
+                turrets,
                 commands.reborrow(),
                 meshes,
                 materials,
             );
         }
         // Restore durability (mount inserted a full one); disable if shot out.
-        let (max, armor) = registry.module(spec.kind).durability;
+        let (max, armor) = registry.get(spec.kind).durability;
         commands.entity(mounted.module).insert(ModuleHealth {
             current: spec.health,
             max,

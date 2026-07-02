@@ -70,6 +70,15 @@ pub struct CarryState {
     valid: bool,
 }
 
+impl CarryState {
+    /// Apply a world-space translation to the snapshot's absolute positions, so it
+    /// stays consistent when a floating-origin rebase shifts the whole scene
+    /// (see `origin::rebase_origin`). The relative/velocity fields are unaffected.
+    pub(crate) fn shift(&mut self, offset: Vec2) {
+        self.ship_com_pre += offset;
+    }
+}
+
 pub fn spawn_player(
     mut commands: Commands,
     _asset_server: Res<AssetServer>,

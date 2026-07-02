@@ -1,3 +1,4 @@
+use bevy::math::DVec2;
 use bevy::prelude::*;
 
 use crate::camera::move_camera;
@@ -154,18 +155,28 @@ fn spawn_star_layer(
 /// Each frame, place every parallax element relative to the camera: its on-screen
 /// offset scrolls by `(1 - strength)` of the camera's motion, wrapped into a
 /// `tile`-sized cell centered on the camera so the field tiles infinitely.
+///
+/// The scroll phase is computed from the camera's *world* position
+/// (`WorldOrigin` + local, in f64) so the starfield is continuous across
+/// floating-origin rebases — phase from the local camera position alone would
+/// snap by `origin_shift * strength` every rebase. The wrapped offset is small,
+/// so converting back to f32 costs nothing.
 fn apply_parallax(
+    origin: Res<crate::origin::WorldOrigin>,
     camera: Single<&Transform, With<Camera2d>>,
     mut elements: Query<(&mut Transform, &Parallax), Without<Camera2d>>,
 ) {
     let cam = camera.translation.xy();
+    let cam_world = origin.0 + cam.as_dvec2();
     for (mut transform, p) in &mut elements {
-        let screen_rel = p.base - cam * p.strength;
-        let half = p.tile / 2.;
-        let wrapped = Vec2::new(
-            (screen_rel.x + half).rem_euclid(p.tile) - half,
-            (screen_rel.y + half).rem_euclid(p.tile) - half,
-        );
+        let screen_rel = p.base.as_dvec2() - cam_world * p.strength as f64;
+        let tile = p.tile as f64;
+        let half = tile / 2.;
+        let wrapped = DVec2::new(
+            (screen_rel.x + half).rem_euclid(tile) - half,
+            (screen_rel.y + half).rem_euclid(tile) - half,
+        )
+        .as_vec2();
         let world = cam + wrapped;
         transform.translation.x = world.x;
         transform.translation.y = world.y;

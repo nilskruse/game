@@ -81,9 +81,10 @@ pub const NOZZLE_OPEN: Color = Color::srgb(0.12, 0.12, 0.14);
 /// Nozzle color when a neighbouring module blocks its exhaust (direction disabled).
 pub const NOZZLE_BLOCKED: Color = Color::srgb(0.65, 0.18, 0.14);
 
-pub fn spawn_player_ship(
+pub(crate) fn spawn_player_ship(
     mut commands: Commands,
     registry: Res<crate::build::ModuleRegistry>,
+    turrets: Res<turret::TurretRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
@@ -95,6 +96,7 @@ pub fn spawn_player_ship(
         ship_rectangle,
         commands.reborrow(),
         &registry,
+        &turrets,
         &mut meshes,
         &mut materials,
     );
@@ -124,10 +126,11 @@ pub enum GameLayer {
     Player,
 }
 
-pub fn spawn_player_ship_base(
+pub(crate) fn spawn_player_ship_base(
     rectangle: Rectangle,
     mut commands: Commands,
     registry: &crate::build::ModuleRegistry,
+    turrets: &turret::TurretRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
@@ -191,8 +194,8 @@ pub fn spawn_player_ship_base(
         &bottom[0],
         Vec2::NEG_Y,
         crate::ship::turret::TurretKind::Cannon,
-        crate::ship::turret::FireArc::OverShip,
         registry,
+        turrets,
         meshes,
         materials,
     );
@@ -215,8 +218,8 @@ pub fn spawn_player_ship_base(
         &top[MID],
         Vec2::Y,
         crate::ship::turret::TurretKind::PlayerCannon,
-        crate::ship::turret::FireArc::Hull,
         registry,
+        turrets,
         meshes,
         materials,
     );
@@ -280,8 +283,8 @@ pub fn spawn_player_ship_base(
         &left[0],
         Vec2::NEG_X,
         crate::ship::turret::TurretKind::PointDefense,
-        crate::ship::turret::FireArc::OverShip,
         registry,
+        turrets,
         meshes,
         materials,
     );

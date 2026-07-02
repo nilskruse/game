@@ -11,6 +11,7 @@ pub mod background;
 pub mod build;
 pub mod camera;
 pub mod character;
+pub mod debug;
 pub mod docking;
 pub mod effects;
 pub mod enemy;
@@ -19,7 +20,9 @@ pub mod health;
 pub mod interaction;
 pub mod inventory;
 pub mod movement;
+pub mod origin;
 pub mod player;
+pub mod registry;
 pub mod save;
 pub mod ship;
 pub mod station;
@@ -75,6 +78,8 @@ fn main() {
         // .insert_resource(SubstepCount(12))
         .add_plugins(Game)
         .add_plugins(WorldPlugin)
+        .add_plugins(origin::FloatingOriginPlugin)
+        .add_plugins(debug::DebugOverlayPlugin)
         .add_plugins(background::BackgroundPlugin)
         .add_plugins(build::BuildPlugin)
         .add_plugins(ui::UiPlugin)
@@ -101,6 +106,10 @@ pub struct Game;
 
 impl Plugin for Game {
     fn build(&self, app: &mut App) {
+        // The turret content registry (weapon stats by `TurretKind`), available to the
+        // `Startup` ship/station spawners and the load path — the counterpart of
+        // `ModuleRegistry` (initialized in `BuildPlugin`).
+        app.init_resource::<ship::turret::TurretRegistry>();
         app.add_systems(Startup, spawn_obstacle);
         app.add_systems(Startup, spawn_enemy);
         app.add_systems(Startup, spawn_enemy_ship);

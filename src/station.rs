@@ -30,10 +30,11 @@ const ARM_SEGMENTS: u32 = 5;
 /// size rather than hard-coding slots.
 ///
 /// Built hierarchically (station hub -> module -> walls), mirroring the ship.
-pub fn spawn_space_station(
+pub(crate) fn spawn_space_station(
     position: Vec2,
     mut commands: Commands,
     registry: &ModuleRegistry,
+    turrets: &crate::ship::turret::TurretRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
@@ -136,6 +137,7 @@ pub fn spawn_space_station(
         &right,
         Vec2::X,
         registry,
+        turrets,
         meshes,
         materials,
     );
@@ -271,6 +273,7 @@ fn equipment_bank(
     slots: &[AttachSlot],
     dir: Vec2,
     registry: &ModuleRegistry,
+    turrets: &crate::ship::turret::TurretRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -294,7 +297,7 @@ fn equipment_bank(
             crate::ship::turret::spawn_turret(
                 mounted.module,
                 crate::ship::turret::TurretKind::Cannon,
-                crate::ship::turret::FireArc::OverShip,
+                turrets,
                 commands.reborrow(),
                 meshes,
                 materials,
@@ -348,7 +351,7 @@ fn mount_far(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Mounted {
-    let width = registry.module(kind).footprint.width as usize;
+    let width = registry.get(kind).footprint.width as usize;
     let slots: Vec<&AttachSlot> = parent.side(direction).iter().take(width).collect();
     mount(
         commands,

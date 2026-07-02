@@ -67,13 +67,20 @@ pub fn spawn_enemy(
 }
 
 /// Startup system: spawn the authored enemy ship.
-pub fn spawn_enemy_ship(
+pub(crate) fn spawn_enemy_ship(
     mut commands: Commands,
     registry: Res<crate::build::ModuleRegistry>,
+    turrets: Res<crate::ship::turret::TurretRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    build_enemy_ship(&mut commands, &registry, &mut meshes, &mut materials);
+    build_enemy_ship(
+        &mut commands,
+        &registry,
+        &turrets,
+        &mut meshes,
+        &mut materials,
+    );
 }
 
 /// Build the authored enemy ship (callable from startup and from save-load content
@@ -83,6 +90,7 @@ pub fn spawn_enemy_ship(
 pub(crate) fn build_enemy_ship(
     commands: &mut Commands,
     registry: &crate::build::ModuleRegistry,
+    turrets: &crate::ship::turret::TurretRegistry,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
@@ -129,8 +137,8 @@ pub(crate) fn build_enemy_ship(
         &right[MID],
         Vec2::X,
         crate::ship::turret::TurretKind::Cannon,
-        crate::ship::turret::FireArc::OverShip,
         registry,
+        turrets,
         meshes,
         materials,
     );

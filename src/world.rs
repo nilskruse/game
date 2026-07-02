@@ -76,6 +76,7 @@ fn build_world_block(
 fn spawn_world(
     mut commands: Commands,
     registry: Res<crate::build::ModuleRegistry>,
+    turrets: Res<crate::ship::turret::TurretRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
@@ -93,6 +94,7 @@ fn spawn_world(
         Vec2::new(1200., 0.),
         commands.reborrow(),
         &registry,
+        &turrets,
         &mut meshes,
         &mut materials,
     );

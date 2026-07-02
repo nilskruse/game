@@ -23,7 +23,9 @@ const SAVE_PATH: &str = "save.ron";
 /// Save schema version. Bump only when an existing chunk's format changes
 /// incompatibly — adding or removing a whole chunk does not need a bump (a reader
 /// tolerates a missing chunk; see [`SaveFile`]).
-const SAVE_VERSION: u32 = 2;
+// v3: `ModuleSpec.turret` / `ItemKind::Turret` store a bare `TurretKind` (the fire
+// arc moved into the `TurretDef`).
+const SAVE_VERSION: u32 = 3;
 
 /// Every authored content id the game defines, in spawn order. On load, ids here
 /// that aren't in a save's `known_content_ids` are injected as new content. Keep in
@@ -276,6 +278,8 @@ pub(crate) struct WorldEdit<'w, 's> {
     materials: ResMut<'w, Assets<ColorMaterial>>,
     next: ResMut<'w, NextInstanceId>,
     registry: Res<'w, ModuleRegistry>,
+    turrets: Res<'w, crate::ship::turret::TurretRegistry>,
+    origin: ResMut<'w, crate::origin::WorldOrigin>,
     zoom: ResMut<'w, CameraZoom>,
     camera_snap: ResMut<'w, crate::camera::CameraSnap>,
     pending_pilot: ResMut<'w, crate::player::PendingPilot>,
@@ -341,6 +345,7 @@ pub(crate) fn load_structures(
     file: Res<SaveFile>,
     mut commands: Commands,
     registry: Res<ModuleRegistry>,
+    turrets: Res<crate::ship::turret::TurretRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut next: ResMut<NextInstanceId>,
@@ -363,6 +368,7 @@ pub(crate) fn load_structures(
             s.origin.clone(),
             s.instance_id,
             &registry,
+            &turrets,
             &mut meshes,
             &mut materials,
         );
@@ -372,7 +378,14 @@ pub(crate) fn load_structures(
     let known: HashSet<&str> = chunk.known_content_ids.iter().map(String::as_str).collect();
     for &id in AUTHORED_CONTENT {
         if !known.contains(id) {
-            spawn_authored(id, &registry, &mut commands, &mut meshes, &mut materials);
+            spawn_authored(
+                id,
+                &registry,
+                &turrets,
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+            );
         }
     }
     info!(
@@ -397,6 +410,7 @@ fn new_game(edit: &mut WorldEdit) {
         spawn_authored(
             id,
             &edit.registry,
+            &edit.turrets,
             &mut edit.commands,
             &mut edit.meshes,
             &mut edit.materials,
@@ -410,6 +424,8 @@ fn new_game(edit: &mut WorldEdit) {
     // Fresh structures reuse instance ids from 1, so a stale pending list from an
     // earlier load must not apply to them.
     edit.pending_inventories.0.clear();
+    // The default world spawns at authored (origin-zero) coordinates.
+    edit.origin.0 = bevy::math::DVec2::ZERO;
     edit.zoom.0 = 1.0;
     edit.camera_snap.0 = true;
     info!("started a new game");
@@ -444,6 +460,7 @@ pub(crate) fn spawn_new_game_button(mut commands: Commands, theme: Res<crate::ui
 fn spawn_authored(
     id: &str,
     registry: &ModuleRegistry,
+    turrets: &crate::ship::turret::TurretRegistry,
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
@@ -454,16 +471,18 @@ fn spawn_authored(
                 Rectangle::new(150., 150.),
                 commands.reborrow(),
                 registry,
+                turrets,
                 meshes,
                 materials,
             );
         }
-        "enemy_ship" => build_enemy_ship(commands, registry, meshes, materials),
+        "enemy_ship" => build_enemy_ship(commands, registry, turrets, meshes, materials),
         "station" => {
             spawn_space_station(
                 Vec2::new(1200., 0.),
                 commands.reborrow(),
                 registry,
+                turrets,
                 meshes,
                 materials,
             );

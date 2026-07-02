@@ -15,34 +15,19 @@ use crate::{
     ship::{bullet, bullet::Bullet, ShipBase, StructureRoot},
 };
 
-/// How far a point-defense turret can reach incoming projectiles (world units).
-const PD_RANGE: f32 = 320.;
-/// Seconds between point-defense shots (one per barrel, alternating) — a fast stream.
-const PD_FIRE_INTERVAL: f32 = 0.04;
-/// Speed of a point-defense slug (world units / second) — faster than enemy fire.
-const PD_SLUG_SPEED: f32 = 2600.;
 /// A PD slug knocks out an enemy projectile within this distance.
 const PD_HIT_RADIUS: f32 = 26.;
-/// Durability a single PD slug strips from a projectile (cf. `bullet::BULLET_HEALTH`,
-/// so it takes several hits — not one — to kill an incoming round).
-const PD_SLUG_DAMAGE: f32 = 1.0;
-/// Half the gap between the two PD barrels (local units); slugs alternate sides.
-const PD_BARREL_OFFSET: f32 = 7.0;
-/// How fast turrets slew toward their target (radians / second). Point-defense
-/// tracks faster than a main cannon; a player gun follows the cursor fastest.
-const CANNON_TURN_SPEED: f32 = 6.0;
-const PD_TURN_SPEED: f32 = 13.0;
-const PLAYER_TURN_SPEED: f32 = 16.0;
-/// Seconds between shots from a player-aimed cannon while the trigger is held.
-const PLAYER_FIRE_INTERVAL: f32 = 0.25;
 /// How far to project an aim ray when testing whether a direction clears the ship —
 /// well past any of the firing ship's own structure.
 const AIM_REACH: f32 = 1000.;
 /// Angular step (radians) when searching for the nearest clear aim direction.
 const AIM_SWEEP_STEP: f32 = 0.05;
 
-/// A turret's role. Orthogonal to its [`FireArc`].
-#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+/// A turret's role. A stable id only — all per-kind data (including its [`FireArc`])
+/// lives in its [`TurretDef`], looked up through the [`TurretRegistry`]; the
+/// kind still selects *behavior* (which system drives the turret), like
+/// `ModuleArchetype` does for modules.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TurretKind {
     /// A regular gun: auto-tracks and shoots enemy ships (see `select_target` /
     /// `fire_turret`).
@@ -57,34 +42,15 @@ pub enum TurretKind {
     PlayerCannon,
 }
 
-/// Whether a turret can fire over its own ship. Orthogonal to its [`TurretKind`] —
-/// both cannons and point-defense turrets have an arc.
-#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Whether a turret can fire over its own ship. Part of the [`TurretDef`] — a weapon
+/// model with a different arc is a different def row (never persisted per-instance).
+#[derive(Clone, Copy, PartialEq)]
 pub enum FireArc {
     /// Mounted high / on a free arc: fires from any angle, even across its own hull.
     OverShip,
     /// Mounted on the hull: a shot is suppressed when the line to its target would
     /// pass through one of its own ship's modules (or hull).
     Hull,
-}
-
-impl TurretKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            TurretKind::Cannon => "Cannon",
-            TurretKind::PointDefense => "Point-defense",
-            TurretKind::PlayerCannon => "Player cannon",
-        }
-    }
-
-    /// Cycle through the kinds, for the build-mode `T` key.
-    pub fn next(self) -> Self {
-        match self {
-            TurretKind::Cannon => TurretKind::PointDefense,
-            TurretKind::PointDefense => TurretKind::PlayerCannon,
-            TurretKind::PlayerCannon => TurretKind::Cannon,
-        }
-    }
 }
 
 impl FireArc {
@@ -94,25 +60,115 @@ impl FireArc {
             FireArc::Hull => "Hull",
         }
     }
+}
 
-    /// Toggle between the arcs, for the build-mode `Y` key.
-    pub fn next(self) -> Self {
-        match self {
-            FireArc::OverShip => FireArc::Hull,
-            FireArc::Hull => FireArc::OverShip,
-        }
+/// Which barrel mesh a turret uses (mesh construction stays code; the def picks one).
+#[derive(Clone, Copy)]
+pub(crate) enum TurretMesh {
+    /// Round base with one long barrel ([`create_combined_mesh`]).
+    Cannon,
+    /// Small round base with twin short barrels ([`create_pd_mesh`]).
+    TwinBarrel,
+}
+
+/// The definition of a turret weapon: all its static per-kind data in one place, the
+/// same def-vs-instance split as [`ModuleDef`](crate::build::ModuleDef). An installed
+/// [`Turret`] is the instance (timer + kind/arc); systems and `spawn_turret` read the
+/// numbers from here via the [`TurretRegistry`].
+pub(crate) struct TurretDef {
+    pub kind: TurretKind,
+    pub name: &'static str,
+    /// Seconds between shots.
+    pub fire_interval: f32,
+    /// Round speed (world units/s): bullets for cannons, interception slugs for PD.
+    pub projectile_speed: f32,
+    /// Damage per round: armored ship damage for cannons; for PD, the durability one
+    /// slug chips off an incoming projectile (cf. `bullet::BULLET_HEALTH`, so it takes
+    /// several hits — not one — to kill a round). PD never damages ships.
+    pub damage: f32,
+    /// How fast the turret slews toward its aim (radians/s).
+    pub turn_speed: f32,
+    /// Engagement reach (world units). PD: how far it tracks incoming projectiles.
+    /// Cannons: unlimited for now — `select_target` has no range yet (see Code check).
+    pub range: f32,
+    /// Distance from the pivot to the muzzle, where rounds spawn.
+    pub muzzle: f32,
+    /// Half the gap between twin barrels (0 = single barrel); PD slugs alternate sides.
+    pub barrel_offset: f32,
+    /// Whether this weapon can fire over its own ship (see [`FireArc`]).
+    pub arc: FireArc,
+    /// Barrel tint.
+    pub tint: Color,
+    pub mesh: TurretMesh,
+}
+
+/// The turret content registry: every [`TurretDef`] keyed by [`TurretKind`]. Inserted
+/// at app build (see `main.rs`); query with `get(kind)`.
+pub(crate) type TurretRegistry = crate::registry::Registry<TurretKind, TurretDef>;
+
+impl Default for TurretRegistry {
+    fn default() -> Self {
+        Self::new(turret_defs().into_iter().map(|d| (d.kind, d)))
     }
 }
 
+/// The authored turret definitions — the single source of truth for weapon stats.
+fn turret_defs() -> Vec<TurretDef> {
+    vec![
+        TurretDef {
+            kind: TurretKind::Cannon,
+            name: "Cannon",
+            fire_interval: 1.0,
+            projectile_speed: 2000.,
+            damage: 100.,
+            turn_speed: 6.0,
+            range: f32::INFINITY,
+            muzzle: 100.,
+            barrel_offset: 0.,
+            arc: FireArc::OverShip,
+            tint: Color::srgb(0.4, 0.8, 1.0),
+            mesh: TurretMesh::Cannon,
+        },
+        TurretDef {
+            kind: TurretKind::PointDefense,
+            name: "Point-defense",
+            fire_interval: 0.04,
+            projectile_speed: 2600.,
+            damage: 1.0,
+            turn_speed: 13.0,
+            range: 320.,
+            muzzle: 24.,
+            barrel_offset: 7.0,
+            arc: FireArc::OverShip,
+            tint: Color::srgb(1.0, 0.8, 0.2),
+            mesh: TurretMesh::TwinBarrel,
+        },
+        TurretDef {
+            kind: TurretKind::PlayerCannon,
+            name: "Player cannon",
+            fire_interval: 0.25,
+            projectile_speed: 2000.,
+            damage: 100.,
+            turn_speed: 16.0,
+            range: f32::INFINITY,
+            muzzle: 100.,
+            barrel_offset: 0.,
+            // Hull arc: the player gun is always LOS-gated against its own ship.
+            arc: FireArc::Hull,
+            tint: Color::srgb(0.4, 1.0, 0.5),
+            mesh: TurretMesh::Cannon,
+        },
+    ]
+}
+
+/// An installed turret weapon — the *instance*: which def it is (`kind`) and its live
+/// firing state. All static stats (including the fire arc) stay in the [`TurretDef`];
+/// systems look them up by `kind`.
 #[derive(Component)]
 #[require(Transform)]
 pub struct Turret {
     timer: Timer,
-    _fire_rate: f32,
-    velocity: f32,
-    damage: f32,
     kind: TurretKind,
-    arc: FireArc,
     /// Point-defense: which barrel fires next, toggled each shot so the two barrels
     /// alternate.
     next_barrel: bool,
@@ -123,23 +179,6 @@ impl Turret {
     pub fn kind(&self) -> TurretKind {
         self.kind
     }
-    /// The installed weapon's firing arc (for blueprint extraction).
-    pub fn arc(&self) -> FireArc {
-        self.arc
-    }
-
-    pub fn new(fire_rate: f32, velocity: f32, damage: f32, kind: TurretKind, arc: FireArc) -> Self {
-        let timer = Timer::from_seconds(fire_rate, TimerMode::Repeating);
-        Self {
-            timer,
-            _fire_rate: fire_rate,
-            velocity,
-            damage,
-            kind,
-            arc,
-            next_barrel: false,
-        }
-    }
 }
 
 #[derive(Component)]
@@ -149,42 +188,26 @@ pub struct Target(pub Entity);
 #[relationship_target(relationship = Target)]
 pub struct TargettedBy(Vec<Entity>);
 
-/// Install a turret of `kind`/`arc` into a turret module (`parent`). The module is a
+/// Install a turret of `kind` into a turret module (`parent`). The module is a
 /// bare mount; this is what puts an actual weapon on it. Returns the turret entity.
-/// Cannons are tinted by arc (over-ship blue, hull white); point-defense is amber.
-pub fn spawn_turret(
+/// Everything about the weapon (mesh, fire rate, arc, tint) comes from its [`TurretDef`].
+pub(crate) fn spawn_turret(
     parent: Entity,
     kind: TurretKind,
-    arc: FireArc,
+    defs: &TurretRegistry,
     mut commands: Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    // Mesh + weapon stats by kind; point-defense has twin short barrels, a very high
-    // fire rate and no ship damage.
-    let (shape, turret) = match kind {
-        TurretKind::Cannon => (
-            create_combined_mesh(),
-            Turret::new(1.0, 2000., 100., kind, arc),
-        ),
-        TurretKind::PointDefense => (
-            create_pd_mesh(),
-            Turret::new(PD_FIRE_INTERVAL, 0., 0., kind, arc),
-        ),
-        TurretKind::PlayerCannon => (
-            create_combined_mesh(),
-            Turret::new(PLAYER_FIRE_INTERVAL, 2000., 100., kind, arc),
-        ),
+    let def = defs.get(kind);
+    let turret = Turret {
+        timer: Timer::from_seconds(def.fire_interval, TimerMode::Repeating),
+        kind,
+        next_barrel: false,
     };
-    // Tint: point-defense amber, player gun green; auto cannons read their arc
-    // (over-ship blue, hull white).
-    let tint = match kind {
-        TurretKind::PointDefense => Color::srgb(1.0, 0.8, 0.2),
-        TurretKind::PlayerCannon => Color::srgb(0.4, 1.0, 0.5),
-        TurretKind::Cannon => match arc {
-            FireArc::OverShip => Color::srgb(0.4, 0.8, 1.0),
-            FireArc::Hull => Color::WHITE,
-        },
+    let shape = match def.mesh {
+        TurretMesh::Cannon => create_combined_mesh(),
+        TurretMesh::TwinBarrel => create_pd_mesh(),
     };
     commands
         .spawn((
@@ -192,7 +215,7 @@ pub fn spawn_turret(
             // Sits on top of the module block.
             Transform::from_xyz(0., 0., 0.6),
             Mesh2d(meshes.add(shape)),
-            MeshMaterial2d(materials.add(tint)),
+            MeshMaterial2d(materials.add(def.tint)),
             ChildOf(parent),
         ))
         .id()
@@ -220,6 +243,7 @@ pub fn select_target(
 
 pub(crate) fn rotate_turret(
     time: Res<Time>,
+    defs: Res<TurretRegistry>,
     mut turret_query: Query<(
         &Target,
         &Turret,
@@ -239,18 +263,19 @@ pub(crate) fn rotate_turret(
         let Ok(target_gt) = targets.get(target.0) else {
             continue;
         };
+        let def = defs.get(turret.kind);
         let pos = global.translation().xy();
         // A hull turret clamps to the edge of its arc rather than aiming into the ship.
         let aim = aim_point(
             pos,
             target_gt.translation().xy(),
-            turret.arc,
+            def.arc,
             root.0,
             child_of.parent(),
             &modules,
             &hulls,
         );
-        rotate_toward(&mut transform, global, aim, CANNON_TURN_SPEED * dt);
+        rotate_toward(&mut transform, global, aim, def.turn_speed * dt);
     }
 }
 
@@ -288,6 +313,7 @@ fn wrap_pi(a: f32) -> f32 {
 /// never damages ships.
 pub(crate) fn point_defense(
     time: Res<Time>,
+    defs: Res<TurretRegistry>,
     mut commands: Commands,
     mut turrets: Query<(
         &mut Turret,
@@ -307,6 +333,7 @@ pub(crate) fn point_defense(
         if turret.kind != TurretKind::PointDefense {
             continue;
         }
+        let def = defs.get(turret.kind);
         turret.timer.tick(time.delta());
         // Shot out with its module? Can't defend.
         if disabled.contains(child_of.parent()) {
@@ -324,10 +351,10 @@ pub(crate) fn point_defense(
             }
             let bullet_pos = bullet_pos.0;
             let dist = pos.distance(bullet_pos);
-            if dist > PD_RANGE {
+            if dist > def.range {
                 continue;
             }
-            if turret.arc == FireArc::Hull
+            if def.arc == FireArc::Hull
                 && shot_blocked(pos, bullet_pos, root.0, child_of.parent(), &modules, &hulls)
             {
                 continue;
@@ -342,7 +369,7 @@ pub(crate) fn point_defense(
 
         // Track the threat naturally, and fire a slug along the current barrel line,
         // alternating between the two barrels.
-        rotate_toward(&mut transform, global, bullet_pos, PD_TURN_SPEED * dt);
+        rotate_toward(&mut transform, global, bullet_pos, def.turn_speed * dt);
         if turret.timer.just_finished() {
             let dir = (global.rotation() * Vec3::Y).truncate().normalize_or_zero();
             if dir != Vec2::ZERO {
@@ -350,11 +377,12 @@ pub(crate) fn point_defense(
                 let side = if turret.next_barrel { 1.0 } else { -1.0 };
                 turret.next_barrel = !turret.next_barrel;
                 let perp = Vec2::new(dir.y, -dir.x);
-                let muzzle = pos + dir * 24.0 + perp * (side * PD_BARREL_OFFSET);
+                let muzzle = pos + dir * def.muzzle + perp * (side * def.barrel_offset);
                 spawn_pd_slug(
                     &mut commands,
                     muzzle,
-                    dir * PD_SLUG_SPEED,
+                    dir * def.projectile_speed,
+                    def.damage,
                     faction.0.clone(),
                 );
             }
@@ -367,14 +395,26 @@ pub(crate) fn point_defense(
 #[derive(Component)]
 pub(crate) struct PdSlug {
     velocity: Vec2,
+    /// Durability chipped off a projectile it reaches (from the firing turret's def).
+    damage: f32,
     /// The firing side; the slug only kills projectiles of the *other* faction.
     faction: Faction,
 }
 
 /// Spawn a point-defense slug at `pos` moving at `velocity`, fired by `faction`.
-fn spawn_pd_slug(commands: &mut Commands, pos: Vec2, velocity: Vec2, faction: Faction) {
+fn spawn_pd_slug(
+    commands: &mut Commands,
+    pos: Vec2,
+    velocity: Vec2,
+    damage: f32,
+    faction: Faction,
+) {
     commands.spawn((
-        PdSlug { velocity, faction },
+        PdSlug {
+            velocity,
+            damage,
+            faction,
+        },
         Sprite::from_color(Color::srgb(1.0, 0.85, 0.3), Vec2::splat(5.0)),
         Transform::from_translation(pos.extend(1.0)),
         Lifetime(Timer::from_seconds(0.5, TimerMode::Once)),
@@ -404,7 +444,7 @@ pub(crate) fn update_pd_slugs(
             if point_segment_distance(bullet_pos, from, to) <= PD_HIT_RADIUS {
                 // A slug chips the projectile (and is spent); it only dies once worn
                 // down — a single hit no longer deletes it.
-                bullet.health -= PD_SLUG_DAMAGE;
+                bullet.health -= slug.damage;
                 if bullet.health <= 0. {
                     commands.entity(bullet_entity).try_despawn();
                 }
@@ -436,6 +476,7 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 /// [`PlayerCannon`]: TurretKind::PlayerCannon
 pub(crate) fn player_weapons(
     time: Res<Time>,
+    defs: Res<TurretRegistry>,
     mouse: Res<ButtonInput<MouseButton>>,
     build_state: Res<State<BuildState>>,
     over_ui: Res<crate::ui::PointerOverUi>,
@@ -475,25 +516,27 @@ pub(crate) fn player_weapons(
         if turret.kind != TurretKind::PlayerCannon || root.0 != seated.ship {
             continue;
         }
+        let def = defs.get(turret.kind);
         turret.timer.tick(time.delta());
         // Shot out with its module? Can't aim or fire.
         if disabled.contains(child_of.parent()) {
             continue;
         }
 
-        // Follow the cursor, but a player cannon can't shoot over its own ship: lock
-        // to the nearest direction that clears it instead of clipping into the hull.
+        // Follow the cursor, but a player cannon can't shoot over its own ship (its
+        // def's arc is `Hull`): lock to the nearest direction that clears it instead
+        // of clipping into the hull.
         let pos = global.translation().xy();
         let aim = aim_point(
             pos,
             cursor,
-            FireArc::Hull,
+            def.arc,
             root.0,
             child_of.parent(),
             &modules,
             &hulls,
         );
-        rotate_toward(&mut transform, global, aim, PLAYER_TURN_SPEED * dt);
+        rotate_toward(&mut transform, global, aim, def.turn_speed * dt);
 
         // Fire on held trigger, gated by rate and by the barrel's *current* line being
         // clear — so it fires wherever it's locked, never through the ship.
@@ -505,14 +548,14 @@ pub(crate) fn player_weapons(
             continue;
         }
         let rotation = global.rotation();
-        let muzzle = global.translation() + rotation * Vec3::new(0., 100., 0.);
+        let muzzle = global.translation() + rotation * Vec3::new(0., def.muzzle, 0.);
         let mut spawn_location = Transform::from_translation(muzzle);
         spawn_location.rotation = rotation;
-        let velocity = (rotation * Vec3::Y).xy() * turret.velocity;
+        let velocity = (rotation * Vec3::Y).xy() * def.projectile_speed;
         bullet::spawn(
             spawn_location,
             velocity,
-            turret.damage,
+            def.damage,
             faction.0.clone(),
             commands.reborrow(),
             &mut meshes,
@@ -534,6 +577,7 @@ fn cursor_world(
 
 pub(crate) fn fire_turret(
     mut commands: Commands,
+    defs: Res<TurretRegistry>,
     mut turret_query: Query<(
         &mut Turret,
         &GlobalTransform,
@@ -553,6 +597,7 @@ pub(crate) fn fire_turret(
     for (mut turret, turret_global_transform, faction, child_of, target, root) in
         turret_query.iter_mut()
     {
+        let def = defs.get(turret.kind);
         turret.timer.tick(time.delta());
         if !turret.timer.just_finished() {
             continue;
@@ -562,7 +607,7 @@ pub(crate) fn fire_turret(
             continue;
         }
         // A hull-arc turret holds fire when its shot would pass through its own ship.
-        if turret.arc == FireArc::Hull {
+        if def.arc == FireArc::Hull {
             if let Ok(target_gt) = transforms.get(target.0) {
                 let from = turret_global_transform.translation().xy();
                 let to = target_gt.translation().xy();
@@ -576,19 +621,19 @@ pub(crate) fn fire_turret(
 
         let forward_direction = global_rotation * Vec3::Y;
 
-        let muzzle_offset = Vec3::new(0., 100., 0.);
+        let muzzle_offset = Vec3::new(0., def.muzzle, 0.);
         let muzzle_location = global_translation + (global_rotation * muzzle_offset);
 
         let mut spawn_location = Transform::from_translation(muzzle_location);
         spawn_location.rotation = global_rotation;
 
         // Velocity in the direction the turret is facing
-        let spawn_velocity = forward_direction.xy() * turret.velocity;
+        let spawn_velocity = forward_direction.xy() * def.projectile_speed;
 
         bullet::spawn(
             spawn_location,
             spawn_velocity,
-            turret.damage,
+            def.damage,
             faction.0.clone(),
             commands.reborrow(),
             &mut meshes,
