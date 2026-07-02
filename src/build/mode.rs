@@ -10,6 +10,7 @@ use super::registry::{ModuleDef, ModuleRegistry};
 use super::spawn::{spawn_module_sided, BuiltModule};
 use super::{same_dir, UNIT};
 use crate::ship::turret::{spawn_turret, FireArc, Turret, TurretKind};
+use crate::ship::StructureRoot;
 
 /// How close (world units) the snap-test point must be to an attachment point.
 const SNAP: f32 = 35.;
@@ -135,14 +136,10 @@ fn enter_build_mode(
     }
 }
 
-/// Walk up the `ChildOf` chain to the structure root (ship hull / station root).
-fn structure_root(entity: Entity, parents: &Query<&ChildOf>) -> Entity {
-    let mut current = entity;
-    while let Ok(child_of) = parents.get(current) {
-        current = child_of.parent();
-    }
-    current
-}
+// Structure membership is read from the propagated `StructureRoot` component (an O(1)
+// lookup) rather than walking `ChildOf` per part per frame. The propagation lands one
+// frame after a part is built, so a just-placed module/attach point is invisible to
+// these systems for a single frame — negligible for user-paced building.
 
 /// Footprints of `structure`'s existing modules, in the structure's local frame —
 /// axis-aligned, since modules aren't rotated relative to their structure. Each is
@@ -151,13 +148,12 @@ fn structure_root(entity: Entity, parents: &Query<&ChildOf>) -> Entity {
 fn structure_footprints(
     structure: Entity,
     inv: Affine3A,
-    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: &Query<&ChildOf>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
 ) -> Vec<(Vec2, Vec2)> {
     modules
         .iter()
-        .filter(|(e, ..)| structure_root(*e, parents) == structure)
-        .map(|(_, m, gt)| (inv.transform_point3(gt.translation()).xy(), m.size / 2.))
+        .filter(|(.., sr)| sr.0 == structure)
+        .map(|(_, m, gt, _)| (inv.transform_point3(gt.translation()).xy(), m.size / 2.))
         .collect()
 }
 
@@ -166,8 +162,7 @@ fn structure_footprints(
 fn structure_blocking(
     structure: Option<Entity>,
     bodies: &Query<&GlobalTransform>,
-    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: &Query<&ChildOf>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
 ) -> (Option<Affine3A>, Vec<(Vec2, Vec2)>) {
     let Some(structure) = structure else {
         return (None, Vec::new());
@@ -176,10 +171,7 @@ fn structure_blocking(
         return (None, Vec::new());
     };
     let inv = gt.affine().inverse();
-    (
-        Some(inv),
-        structure_footprints(structure, inv, modules, parents),
-    )
+    (Some(inv), structure_footprints(structure, inv, modules))
 }
 
 /// Whether the cell just outside an attach point (world position `world`, facing
@@ -418,10 +410,9 @@ pub(crate) fn update_ghost(
     registry: Res<ModuleRegistry>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    points: Query<(Entity, &AttachPoint, &GlobalTransform)>,
+    points: Query<(Entity, &AttachPoint, &GlobalTransform, &StructureRoot)>,
     bodies: Query<&GlobalTransform>,
-    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: Query<&ChildOf>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     mut ghosts: Query<&mut Transform, With<Ghost>>,
 ) {
     if !build.active {
@@ -441,11 +432,11 @@ pub(crate) fn update_ghost(
     // Resolve where the module would attach (auto-orienting to the nearest side, only on the
     // structure being edited) and snap the ghost there: at the module's center, rotated so its
     // outward edge points out.
-    let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules, &parents);
+    let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules);
     let infos: Vec<PointInfo> = points
         .iter()
-        .filter(|(entity, ..)| Some(structure_root(*entity, &parents)) == build.structure)
-        .map(|(entity, point, gt)| {
+        .filter(|(.., sr)| Some(sr.0) == build.structure)
+        .map(|(entity, point, gt, _)| {
             let world = gt.translation().xy();
             PointInfo {
                 entity,
@@ -626,30 +617,30 @@ pub(crate) fn highlight_attach_points(
         Entity,
         &AttachPoint,
         &GlobalTransform,
+        &StructureRoot,
         &MeshMaterial2d<ColorMaterial>,
         &mut Transform,
         &mut Visibility,
     )>,
     bodies: Query<&GlobalTransform>,
-    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: Query<&ChildOf>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     if !build.active {
-        for (_, _, _, _, _, mut vis) in &mut points {
+        for (_, _, _, _, _, _, mut vis) in &mut points {
             *vis = Visibility::Hidden;
         }
         return;
     }
 
     // Only the structure being edited contributes attach points.
-    let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules, &parents);
+    let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules);
     let blocked =
         |world: Vec2, dir: Vec2| inv.is_some_and(|i| cell_blocked(world, dir, i, &footprints));
     let infos: Vec<PointInfo> = points
         .iter()
-        .filter(|(entity, ..)| Some(structure_root(*entity, &parents)) == build.structure)
-        .map(|(entity, point, gt, _, _, _)| {
+        .filter(|(_, _, _, sr, ..)| Some(sr.0) == build.structure)
+        .map(|(entity, point, gt, _, _, _, _)| {
             let world = gt.translation().xy();
             PointInfo {
                 entity,
@@ -685,9 +676,9 @@ pub(crate) fn highlight_attach_points(
         }
     }
 
-    for (entity, point, gt, material, mut transform, mut vis) in &mut points {
+    for (entity, point, gt, sr, material, mut transform, mut vis) in &mut points {
         // Points on other structures stay hidden — you build one structure at a time.
-        if Some(structure_root(entity, &parents)) != build.structure {
+        if Some(sr.0) != build.structure {
             *vis = Visibility::Hidden;
             continue;
         }
@@ -718,10 +709,9 @@ fn try_place_module(
     build: &BuildMode,
     registry: &ModuleRegistry,
     cameras: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    points: &mut Query<(Entity, &mut AttachPoint, &GlobalTransform)>,
+    points: &mut Query<(Entity, &mut AttachPoint, &GlobalTransform, &StructureRoot)>,
     bodies: &Query<&GlobalTransform>,
-    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: &Query<&ChildOf>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
@@ -732,11 +722,11 @@ fn try_place_module(
     let def = registry.module(kind);
     let footprint = def.footprint;
 
-    let (inv, footprints) = structure_blocking(build.structure, bodies, modules, parents);
+    let (inv, footprints) = structure_blocking(build.structure, bodies, modules);
     let infos: Vec<PointInfo> = points
         .iter()
-        .filter(|(entity, ..)| Some(structure_root(*entity, parents)) == build.structure)
-        .map(|(entity, point, gt)| {
+        .filter(|(.., sr)| Some(sr.0) == build.structure)
+        .map(|(entity, point, gt, _)| {
             let world = gt.translation().xy();
             PointInfo {
                 entity,
@@ -836,7 +826,7 @@ fn try_place_module(
     // dragging a turret item onto it (see `install_turret` / `inventory`).
 
     for entity in occupied {
-        if let Ok((_, mut point, _)) = points.get_mut(entity) {
+        if let Ok((_, mut point, _, _)) = points.get_mut(entity) {
             point.occupied = true;
         }
     }
@@ -877,10 +867,9 @@ pub(crate) fn place_module(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     mut build: ResMut<BuildMode>,
-    mut points: Query<(Entity, &mut AttachPoint, &GlobalTransform)>,
+    mut points: Query<(Entity, &mut AttachPoint, &GlobalTransform, &StructureRoot)>,
     bodies: Query<&GlobalTransform>,
-    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: Query<&ChildOf>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -901,7 +890,6 @@ pub(crate) fn place_module(
         &mut points,
         &bodies,
         &modules,
-        &parents,
         &mut commands,
         &mut meshes,
         &mut materials,
@@ -919,10 +907,9 @@ pub(crate) fn drop_module(
     registry: &ModuleRegistry,
     windows: &Query<&Window>,
     cameras: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    points: &mut Query<(Entity, &mut AttachPoint, &GlobalTransform)>,
+    points: &mut Query<(Entity, &mut AttachPoint, &GlobalTransform, &StructureRoot)>,
     bodies: &Query<&GlobalTransform>,
-    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
-    parents: &Query<&ChildOf>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
@@ -931,8 +918,7 @@ pub(crate) fn drop_module(
         false
     } else if let Some(cursor) = cursor_world(windows, cameras) {
         try_place_module(
-            cursor, build, registry, cameras, points, bodies, modules, parents, commands, meshes,
-            materials,
+            cursor, build, registry, cameras, points, bodies, modules, commands, meshes, materials,
         )
     } else {
         false
@@ -953,10 +939,9 @@ pub(crate) fn install_turret(
     build: &BuildMode,
     windows: &Query<&Window>,
     cameras: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    modules: &Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    modules: &Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     children: &Query<&Children>,
     turrets: &Query<(), With<Turret>>,
-    parents: &Query<&ChildOf>,
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
@@ -970,10 +955,8 @@ pub(crate) fn install_turret(
     // Nearest empty turret mount whose footprint is under the cursor, on the edited
     // structure (mirrors `deconstruct_module`'s pick, filtered to empty turret mounts).
     let mut hit: Option<(Entity, f32)> = None;
-    for (entity, module, gt) in modules {
-        if module.kind != ModuleKind::Turret
-            || Some(structure_root(entity, parents)) != build.structure
-        {
+    for (entity, module, gt, sr) in modules {
+        if module.kind != ModuleKind::Turret || Some(sr.0) != build.structure {
             continue;
         }
         let has_turret = children
@@ -1021,11 +1004,10 @@ pub(crate) fn deconstruct_module(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     mut commands: Commands,
-    modules: Query<(Entity, &BuiltModule, &GlobalTransform)>,
+    modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     children: Query<&Children>,
     turrets: Query<&Turret>,
     players: Query<Entity, With<crate::ship::PlayerShip>>,
-    parents: Query<&ChildOf>,
     mut points: Query<&mut AttachPoint>,
 ) {
     if !build.active
@@ -1042,8 +1024,8 @@ pub(crate) fn deconstruct_module(
     // The built module whose footprint is under the cursor (nearest center wins),
     // restricted to the structure being edited.
     let mut hit: Option<(Entity, f32)> = None;
-    for (entity, module, gt) in &modules {
-        if Some(structure_root(entity, &parents)) != build.structure {
+    for (entity, module, gt, sr) in &modules {
+        if Some(sr.0) != build.structure {
             continue;
         }
         let local = gt.affine().inverse().transform_point3(cursor.extend(0.));
