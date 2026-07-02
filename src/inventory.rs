@@ -243,6 +243,14 @@ fn module_stats(
     stats
 }
 
+/// Display name for a turret item of `kind` — derived in exactly one place so every
+/// site that creates a turret stack (seeding, refunds) produces the same name, and
+/// stacking (which compares kind + name, see [`add_item`]) always merges identical
+/// turrets. Module item names are single-sourced the same way, through the registry.
+fn turret_item_name(kind: TurretKind) -> String {
+    format!("{} Turret", kind.name())
+}
+
 /// The slot swatch / drag-chip color for an item (module uses its build color).
 fn item_swatch(stack: &ItemStack, registry: &ModuleRegistry, theme: &Theme) -> Color {
     match stack.kind {
@@ -269,7 +277,10 @@ impl StatFocus {
     }
 }
 
-/// One stack of identical items in the inventory.
+/// One stack of identical items in the inventory. For modules and turrets the `name`
+/// is *derived* from the kind (registry name / [`turret_item_name`]) — never hand-write
+/// it, or otherwise-identical stacks stop merging. Component/Trade placeholders carry
+/// bespoke names until a real item registry exists.
 #[derive(Clone)]
 pub(crate) struct ItemStack {
     pub kind: ItemKind,
@@ -326,13 +337,13 @@ fn seed_player_inventory(
         });
     }
     // Turrets — installed by dragging onto a placed turret mount.
-    for (kind, arc, name, count) in [
-        (TurretKind::Cannon, FireArc::OverShip, "Cannon Turret", 2),
-        (TurretKind::PointDefense, FireArc::OverShip, "PD Turret", 1),
+    for (kind, arc, count) in [
+        (TurretKind::Cannon, FireArc::OverShip, 2),
+        (TurretKind::PointDefense, FireArc::OverShip, 1),
     ] {
         inventory.items.push(ItemStack {
             kind: ItemKind::Turret(kind, arc),
-            name: name.to_string(),
+            name: turret_item_name(kind),
             count,
         });
     }
@@ -366,7 +377,7 @@ fn refund_deconstructed(
         add_item(
             &mut inventory,
             ItemKind::Turret(kind, arc),
-            format!("{} Turret", kind.name()),
+            turret_item_name(kind),
         );
     }
 }
