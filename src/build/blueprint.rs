@@ -142,10 +142,18 @@ pub(crate) fn extract_blueprint(
     }
 }
 
-/// Spawn a bare structure root for `kind` at `transform`: the hull entity with its
-/// per-kind components + console, and its buildable sides built. Returns the root and
-/// its sides (direction + slots) for mounting. No modules and no `Origin`/`InstanceId`
-/// — `build_structure` adds those and the modules.
+/// The hull size (in cells) of a structure root of `kind`.
+fn root_size(kind: RootKind) -> u32 {
+    if kind == RootKind::Station {
+        10
+    } else {
+        3
+    }
+}
+
+/// Spawn a bare structure root entity for `kind` at `transform`: the hull with its
+/// per-kind *components* only — no children. [`furnish_root`] adds the buildable
+/// sides + console; `build_structure` adds identity and the modules.
 ///
 /// NB: this mirrors the root creation in `spawn_player_ship_base` / `spawn_enemy_ship`
 /// / `spawn_space_station`; keep them in sync (or DRY them later).
@@ -155,9 +163,8 @@ fn spawn_root(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
-) -> (Entity, Vec<(Vec2, Vec<AttachSlot>)>) {
-    let size: u32 = if kind == RootKind::Station { 10 } else { 3 };
-    let extent = size as f32 * super::UNIT;
+) -> Entity {
+    let extent = root_size(kind) as f32 * super::UNIT;
     let rect = Rectangle::new(extent, extent);
 
     let root = match kind {
@@ -207,8 +214,23 @@ fn spawn_root(
             .id(),
     };
     commands.entity(root).insert(Propagate(StructureRoot(root)));
+    root
+}
 
-    let half = rect.half_size;
+/// Build the child scaffolding of a bare root: its four buildable sides (doorway
+/// slots + wall segments) and the engineering console. Returns the sides
+/// (direction + slots) for mounting modules. Split from [`spawn_root`] so waking a
+/// dormant structure (whose root entity survives with its components but lost its
+/// children — see `bubble`) can rebuild the scaffolding onto the *existing* root.
+fn furnish_root(
+    root: Entity,
+    kind: RootKind,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) -> Vec<(Vec2, Vec<AttachSlot>)> {
+    let size = root_size(kind);
+    let half = Vec2::splat(size as f32 * super::UNIT / 2.);
     let mut sides = Vec::new();
     for dir in [Vec2::Y, Vec2::NEG_Y, Vec2::X, Vec2::NEG_X] {
         let slots = build_buildable_side(commands, root, half, size, dir, meshes, materials);
@@ -226,17 +248,18 @@ fn spawn_root(
         RootKind::EnemyShip => {}
     }
 
-    (root, sides)
+    sides
 }
 
 /// Rebuild a whole structure from a [`Blueprint`] and dynamic [`BodyState`]: spawn the
-/// root, set its identity (`origin`/`instance`) and dynamic state, then replay every
-/// module by matching its recorded slot positions to the parent body's slots and
-/// `mount`ing it (installing turrets / setting health). Returns the root entity.
+/// root at `local_pos` (its saved world position mapped into the current floating
+/// origin's frame), set its identity (`origin`/`instance`) and dynamic state, then
+/// replay the modules via [`populate_structure`]. Returns the root entity.
 pub(crate) fn build_structure(
     commands: &mut Commands,
     blueprint: &Blueprint,
     body: &BodyState,
+    local_pos: Vec2,
     origin: Origin,
     instance: u64,
     registry: &ModuleRegistry,
@@ -244,9 +267,9 @@ pub(crate) fn build_structure(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
 ) -> Entity {
-    let transform = Transform::from_xyz(body.pos[0], body.pos[1], 0.)
+    let transform = Transform::from_xyz(local_pos.x, local_pos.y, 0.)
         .with_rotation(Quat::from_rotation_z(body.rot));
-    let (root, root_sides) = spawn_root(blueprint.root, transform, commands, meshes, materials);
+    let root = spawn_root(blueprint.root, transform, commands, meshes, materials);
 
     commands
         .entity(root)
@@ -262,6 +285,29 @@ pub(crate) fn build_structure(
             },
         ));
     }
+
+    populate_structure(
+        commands, root, blueprint, registry, turrets, meshes, materials,
+    );
+    root
+}
+
+/// Build a structure's *children* onto an existing bare root: the side scaffolding
+/// ([`furnish_root`]) and every module from the blueprint, matching each recorded
+/// slot position back to the parent body's slots and `mount`ing it (installing
+/// turrets / setting health). Shared by [`build_structure`] (load) and the
+/// simulation bubble's wake path (`bubble::activate_structures`), which re-populates
+/// a root whose components survived dormancy.
+pub(crate) fn populate_structure(
+    commands: &mut Commands,
+    root: Entity,
+    blueprint: &Blueprint,
+    registry: &ModuleRegistry,
+    turrets: &TurretRegistry,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+) {
+    let root_sides = furnish_root(root, blueprint.root, commands, meshes, materials);
 
     // bodies[i] = the entity + sides for blueprint body index i (0 = root); `None` for a
     // module that couldn't be rebuilt. Indexed by body number — so a skipped module pushes
@@ -339,8 +385,6 @@ pub(crate) fn build_structure(
             .collect();
         bodies.push(Some((mounted.module, sides)));
     }
-
-    root
 }
 
 /// Hops from `e` up the parent chain to `root` (root = 0). A module's parent is the

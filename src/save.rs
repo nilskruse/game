@@ -25,7 +25,9 @@ const SAVE_PATH: &str = "save.ron";
 /// tolerates a missing chunk; see [`SaveFile`]).
 // v3: `ModuleSpec.turret` / `ItemKind::Turret` store a bare `TurretKind` (the fire
 // arc moved into the `TurretDef`).
-const SAVE_VERSION: u32 = 3;
+// v4: `BodyState.pos` is the f64 *world* position (`WorldOrigin` + local), not the
+// origin-relative f32 one — dormant structures can sit anywhere in the big world.
+const SAVE_VERSION: u32 = 4;
 
 /// Every authored content id the game defines, in spawn order. On load, ids here
 /// that aren't in a save's `known_content_ids` are injected as new content. Keep in
@@ -169,11 +171,12 @@ struct StructureSave {
     body: BodyState,
 }
 
-/// Serializable rigid-body state (world frame). `health`/`health_max` are the ship
-/// integrity pool (ships only).
+/// Serializable rigid-body state. `pos` is the f64 **world** position
+/// (`WorldOrigin` + local), so far-away dormant structures round-trip precisely;
+/// `health`/`health_max` are the ship integrity pool (ships only).
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub(crate) struct BodyState {
-    pub(crate) pos: [f32; 2],
+    pub(crate) pos: [f64; 2],
     /// Heading in radians.
     pub(crate) rot: f32,
     pub(crate) lin: [f32; 2],
@@ -197,17 +200,24 @@ pub(crate) fn request_save(
     }
 }
 
-/// Capture the structures chunk: a full blueprint + dynamic state of every live
-/// structure, the instance counter, and the authored-content ids known right now.
+/// Capture the structures chunk: a full blueprint + dynamic state of every
+/// structure — active *and* dormant (the query names `Simulated`, opting out of the
+/// disabling filter) — the instance counter, and the authored-content ids known
+/// right now. An active structure's blueprint/position are read live; a dormant one
+/// reuses its stored blueprint and authoritative `WorldPos` (see `bubble`).
 pub(crate) fn capture_structures(
     next: Res<NextInstanceId>,
     mut file: ResMut<SaveFile>,
+    world_origin: Res<crate::origin::WorldOrigin>,
     roots: Query<(
         Entity,
         &Origin,
         &InstanceId,
         &Position,
         &Rotation,
+        Has<crate::bubble::Simulated>,
+        &crate::bubble::WorldPos,
+        Option<&crate::bubble::StoredBlueprint>,
         Option<&LinearVelocity>,
         Option<&AngularVelocity>,
         Option<&ShipHealth>,
@@ -223,26 +233,37 @@ pub(crate) fn capture_structures(
     let structures = roots
         .iter()
         .map(
-            |(entity, origin, instance, pos, rot, lin, ang, health)| StructureSave {
-                instance_id: instance.0,
-                origin: origin.clone(),
-                blueprint: extract_blueprint(
-                    entity,
-                    &player_ships,
-                    &stations,
-                    &modules,
-                    &attach,
-                    &turrets,
-                    &healths,
-                ),
-                body: BodyState {
-                    pos: pos.0.to_array(),
-                    rot: rot.as_radians(),
-                    lin: lin.map(|l| l.0.to_array()).unwrap_or_default(),
-                    ang: ang.map(|a| a.0).unwrap_or(0.),
-                    health: health.map(|h| h.current).unwrap_or(0.),
-                    health_max: health.map(|h| h.max).unwrap_or(0.),
-                },
+            |(entity, origin, instance, pos, rot, dormant, world_pos, stored, lin, ang, health)| {
+                let (blueprint, pos) = if dormant {
+                    let blueprint = stored
+                        .map(|s| s.0.clone())
+                        .expect("a Simulated structure carries its StoredBlueprint");
+                    (blueprint, world_pos.0)
+                } else {
+                    let blueprint = extract_blueprint(
+                        entity,
+                        &player_ships,
+                        &stations,
+                        &modules,
+                        &attach,
+                        &turrets,
+                        &healths,
+                    );
+                    (blueprint, world_origin.0 + pos.0.as_dvec2())
+                };
+                StructureSave {
+                    instance_id: instance.0,
+                    origin: origin.clone(),
+                    blueprint,
+                    body: BodyState {
+                        pos: pos.to_array(),
+                        rot: rot.as_radians(),
+                        lin: lin.map(|l| l.0.to_array()).unwrap_or_default(),
+                        ang: ang.map(|a| a.0).unwrap_or(0.),
+                        health: health.map(|h| h.current).unwrap_or(0.),
+                        health_max: health.map(|h| h.max).unwrap_or(0.),
+                    },
+                }
             },
         )
         .collect();
@@ -284,7 +305,15 @@ pub(crate) struct WorldEdit<'w, 's> {
     camera_snap: ResMut<'w, crate::camera::CameraSnap>,
     pending_pilot: ResMut<'w, crate::player::PendingPilot>,
     pending_inventories: ResMut<'w, crate::inventory::PendingInventories>,
-    roots: Query<'w, 's, Entity, With<Origin>>,
+    roots: Query<
+        'w,
+        's,
+        Entity,
+        (
+            With<Origin>,
+            bevy::ecs::query::Allow<crate::bubble::Simulated>,
+        ),
+    >,
     player: Query<'w, 's, (Entity, &'static mut Position), With<Player>>,
 }
 
@@ -346,25 +375,39 @@ pub(crate) fn load_structures(
     mut commands: Commands,
     registry: Res<ModuleRegistry>,
     turrets: Res<crate::ship::turret::TurretRegistry>,
+    world_origin: Res<crate::origin::WorldOrigin>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut next: ResMut<NextInstanceId>,
-    roots: Query<Entity, With<Origin>>,
+    roots: Query<
+        Entity,
+        (
+            With<Origin>,
+            bevy::ecs::query::Allow<crate::bubble::Simulated>,
+        ),
+    >,
 ) {
     let Some(chunk) = file.read::<StructuresChunk>("structures") else {
         return;
     };
 
-    // Replace the live world's structures with the saved ones.
+    // Replace the live world's structures with the saved ones (dormant ones too —
+    // `Allow<Simulated>` opts this query out of the disabling filter).
     for root in &roots {
         commands.entity(root).try_despawn();
     }
     next.0 = chunk.next_instance_id;
     for s in &chunk.structures {
+        // Saved positions are world-space f64; the origin chunk was restored just
+        // before this system (see `origin::apply_origin`), so map into its frame.
+        // Everything spawns Active; far structures go dormant on the bubble's next
+        // pass (spawning them dormant directly is the eventual optimization).
+        let local = (bevy::math::DVec2::from_array(s.body.pos) - world_origin.0).as_vec2();
         build_structure(
             &mut commands,
             &s.blueprint,
             &s.body,
+            local,
             s.origin.clone(),
             s.instance_id,
             &registry,

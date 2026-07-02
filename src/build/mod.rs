@@ -9,7 +9,9 @@ mod spawn;
 
 pub(crate) use attach::AttachPoint;
 pub use attach::{build_buildable_side, AttachSlot};
-pub(crate) use blueprint::{build_structure, dump_blueprints, extract_blueprint, Blueprint};
+pub(crate) use blueprint::{
+    build_structure, dump_blueprints, extract_blueprint, populate_structure, Blueprint,
+};
 pub(crate) use kinds::ModuleKind;
 pub(crate) use mode::{begin_module_drag, drop_module, install_turret, ModuleDeconstructed};
 pub use mode::{spawn_build_console, BuildMode, BuildState};

@@ -75,6 +75,7 @@ fn update_debug_text(
     origin: Res<WorldOrigin>,
     player: Query<(&Position, &LinearVelocity), With<Player>>,
     ships: Query<(&Position, &Rotation, &LinearVelocity, &AngularVelocity), With<PlayerShip>>,
+    structures: Query<Has<crate::bubble::Simulated>, With<crate::save::Origin>>,
 ) {
     if panels.iter().all(|v| *v != Visibility::Visible) {
         return;
@@ -91,6 +92,11 @@ fn update_debug_text(
         None => "fps --".to_string(),
     };
     s.push_str(&format!("\norigin {:.1}, {:.1}", origin.0.x, origin.0.y));
+    let dormant = structures.iter().filter(|&d| d).count();
+    s.push_str(&format!(
+        "\nstructures {} active / {dormant} dormant",
+        structures.iter().count() - dormant,
+    ));
     if let Ok((pos, vel)) = player.single() {
         let world = origin.0 + pos.0.as_dvec2();
         s.push_str(&format!(

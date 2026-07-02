@@ -167,14 +167,21 @@ const BAR_HEIGHT: f32 = 8.;
 /// its top modules).
 const BAR_Y_OFFSET: f32 = 150.;
 
-/// Spawn a floating health bar for each ship the first frame it has a [`ShipHealth`].
+/// Spawn a floating health bar for each ship with a [`ShipHealth`] that doesn't have
+/// one. Not `Added`-gated: a ship leaving the simulation bubble keeps its (unchanged)
+/// `ShipHealth` but loses its bar (`update_health_bars` drops it when the ship stops
+/// resolving), so re-entry must be able to grow a new one.
 pub(crate) fn spawn_health_bars(
     mut commands: Commands,
-    new_ships: Query<Entity, Added<ShipHealth>>,
+    ships: Query<Entity, With<ShipHealth>>,
+    bars: Query<&HealthBar>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    for ship in &new_ships {
+    for ship in &ships {
+        if bars.iter().any(|bar| bar.ship == ship) {
+            continue;
+        }
         let background = meshes.add(Rectangle::new(BAR_WIDTH, BAR_HEIGHT));
         let fill = meshes.add(Rectangle::new(BAR_WIDTH, BAR_HEIGHT));
         let dark = materials.add(Color::srgba(0.05, 0.05, 0.05, 0.85));
@@ -214,7 +221,8 @@ pub(crate) fn update_health_bars(
 ) {
     for (bar_entity, bar, mut bar_transform, children) in &mut bars {
         let Ok((ship_gt, health)) = ships.get(bar.ship) else {
-            // Ship destroyed — remove its bar.
+            // Ship destroyed (or dormant — a disabled entity stops resolving in
+            // queries): remove its bar. A dormant ship regrows one on waking.
             commands.entity(bar_entity).despawn();
             continue;
         };

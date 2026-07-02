@@ -8,6 +8,7 @@
 pub mod action;
 pub mod animation;
 pub mod background;
+pub mod bubble;
 pub mod build;
 pub mod camera;
 pub mod character;
@@ -79,6 +80,7 @@ fn main() {
         .add_plugins(Game)
         .add_plugins(WorldPlugin)
         .add_plugins(origin::FloatingOriginPlugin)
+        .add_plugins(bubble::BubblePlugin)
         .add_plugins(debug::DebugOverlayPlugin)
         .add_plugins(background::BackgroundPlugin)
         .add_plugins(build::BuildPlugin)

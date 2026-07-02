@@ -50,12 +50,17 @@ impl Plugin for FloatingOriginPlugin {
                 PostUpdate,
                 rebase_origin.before(TransformSystems::Propagate),
             )
-            // The origin persists in its own save chunk.
+            // The origin persists in its own save chunk. Apply is *not* in
+            // `PersistSet::Apply`: saved structure positions are world-space, so the
+            // origin must be restored before `load_structures` maps them into the
+            // origin frame (the Apply set runs after it).
             .add_systems(
                 Update,
                 (
                     capture_origin.in_set(PersistSet::Capture),
-                    apply_origin.in_set(PersistSet::Apply),
+                    apply_origin
+                        .run_if(crate::save::loading)
+                        .before(crate::save::load_structures),
                 ),
             );
     }

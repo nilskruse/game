@@ -477,7 +477,12 @@ struct InventoriesSave {
 pub(crate) struct PendingInventories(pub(crate) Vec<(u64, Vec<ItemStack>)>);
 
 /// Capture every structure's inventory into the chunk (runs in `PersistSet::Capture`).
-fn capture_inventories(structures: Query<(&InstanceId, &Inventory)>, mut file: ResMut<SaveFile>) {
+fn capture_inventories(
+    // `Allow`: dormant (bubble-disabled) structures keep their inventory on the root
+    // and must be captured too.
+    structures: Query<(&InstanceId, &Inventory), bevy::ecs::query::Allow<crate::bubble::Simulated>>,
+    mut file: ResMut<SaveFile>,
+) {
     let inventories = structures
         .iter()
         .map(|(id, inventory)| (id.0, inventory.items.clone()))
@@ -499,7 +504,10 @@ fn apply_inventories(file: Res<SaveFile>, mut pending: ResMut<PendingInventories
 /// ship's starter seed, which is why this is chained after `seed_player_inventory`.
 fn apply_pending_inventories(
     mut pending: ResMut<PendingInventories>,
-    mut structures: Query<(&InstanceId, &mut Inventory)>,
+    mut structures: Query<
+        (&InstanceId, &mut Inventory),
+        bevy::ecs::query::Allow<crate::bubble::Simulated>,
+    >,
 ) {
     if pending.0.is_empty() {
         return;
