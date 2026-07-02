@@ -19,8 +19,8 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::build::{
-    begin_module_drag, drop_module, install_turret, AttachPoint, BuildMode, BuiltModule,
-    ModuleDeconstructed, ModuleDef, ModuleKind, ModuleRegistry,
+    begin_module_drag, drop_module, install_turret, AttachPoint, BuildMode, BuildState,
+    BuiltModule, ModuleDeconstructed, ModuleDef, ModuleKind, ModuleRegistry,
 };
 use crate::health::{ModuleDisabled, ModuleHealth};
 use crate::save::{InstanceId, PersistSet, SaveFile};
@@ -56,12 +56,20 @@ impl Plugin for InventoryPlugin {
                     // overwrites the starter set (see `apply_pending_inventories`).
                     (seed_player_inventory, apply_pending_inventories).chain(),
                     toggle_inventory_hotkey,
-                    sync_inventory_to_build_mode,
-                    rebuild_inventory_ui,
-                    hover_built_module,
+                    rebuild_inventory_ui.run_if(player_inventory_changed),
+                    hover_built_module.run_if(in_state(BuildState::Building)),
                     update_stat_window,
-                    highlight_turret_mounts,
                 ),
+            )
+            // The window auto-opens/closes with build mode, and the slot list is
+            // refiltered on both edges (build mode shows only build-relevant items).
+            .add_systems(
+                OnEnter(BuildState::Building),
+                (open_build_inventory, rebuild_inventory_ui),
+            )
+            .add_systems(
+                OnExit(BuildState::Building),
+                (close_build_inventory, rebuild_inventory_ui),
             )
             // Persistence: inventories own their save chunk (see `save.rs`).
             .add_systems(
@@ -450,10 +458,7 @@ struct InventoriesSave {
 pub(crate) struct PendingInventories(pub(crate) Vec<(u64, Vec<ItemStack>)>);
 
 /// Capture every structure's inventory into the chunk (runs in `PersistSet::Capture`).
-fn capture_inventories(
-    structures: Query<(&InstanceId, &Inventory)>,
-    mut file: ResMut<SaveFile>,
-) {
+fn capture_inventories(structures: Query<(&InstanceId, &Inventory)>, mut file: ResMut<SaveFile>) {
     let inventories = structures
         .iter()
         .map(|(id, inventory)| (id.0, inventory.items.clone()))
@@ -660,50 +665,55 @@ fn toggle(visibility: &mut Visibility) {
     };
 }
 
-/// Open the inventory on entering build mode and close it on leaving — acting only on the
-/// active-state edge, so manual toggles (the I key / button) still work in between.
-fn sync_inventory_to_build_mode(
-    build: Res<BuildMode>,
-    mut prev_active: Local<bool>,
-    mut windows: Query<&mut Visibility, With<InventoryWindow>>,
-) {
-    if build.active == *prev_active {
-        return;
-    }
-    *prev_active = build.active;
-    let target = if build.active {
-        Visibility::Visible
-    } else {
-        Visibility::Hidden
-    };
+/// `OnEnter(Building)`: open the inventory window alongside the build UI. Manual
+/// toggles (the I key / button) still work while building.
+fn open_build_inventory(mut windows: Query<&mut Visibility, With<InventoryWindow>>) {
     for mut visibility in &mut windows {
-        *visibility = target;
+        *visibility = Visibility::Visible;
     }
 }
 
-/// Rebuild the slot list when the player ship's [`Inventory`] changes (the initial seed,
-/// any later mutation, or a load/new-game swapping in a fresh ship — `Added` counts as
-/// `Changed`) or when build mode is toggled (the filter applies/lifts). Clears the slot
-/// container and respawns one slot per [`ItemStack`] — the view follows the model. While
-/// building, only build-relevant items (modules + components) are shown.
+/// `OnExit(Building)`: close the inventory window and drop the build-only overlays and
+/// focus (turret-mount highlights, the hover highlight, the inspected module) so
+/// nothing lingers — including when build mode ends mid-drag.
+fn close_build_inventory(
+    mut commands: Commands,
+    mut windows: Query<&mut Visibility, With<InventoryWindow>>,
+    overlays: Query<Entity, Or<(With<TurretMountHighlight>, With<HoverHighlight>)>>,
+    mut focus: ResMut<StatFocus>,
+) {
+    for mut visibility in &mut windows {
+        *visibility = Visibility::Hidden;
+    }
+    for overlay in &overlays {
+        commands.entity(overlay).despawn();
+    }
+    focus.module = None;
+}
+
+/// Run condition: the player ship's [`Inventory`] changed this frame (the initial
+/// seed, any later mutation, or a load/new-game swapping in a fresh ship — `Added`
+/// counts as `Changed`).
+fn player_inventory_changed(changed: Query<(), (With<PlayerShip>, Changed<Inventory>)>) -> bool {
+    !changed.is_empty()
+}
+
+/// Rebuild the slot list: clear the slot container and respawn one slot per
+/// [`ItemStack`] — the view follows the model. Registered three ways: in `Update`
+/// under the [`player_inventory_changed`] run condition (model mutations), and in
+/// `OnEnter`/`OnExit` of `BuildState::Building` (the build filter applies/lifts;
+/// select/rotate don't rebuild). While building, only build-relevant items
+/// (modules + turrets + components) are shown.
 fn rebuild_inventory_ui(
-    build: Res<BuildMode>,
-    mut prev_active: Local<bool>,
+    state: Res<State<BuildState>>,
     registry: Res<ModuleRegistry>,
     theme: Res<Theme>,
     inventories: Query<(Entity, &Inventory), With<PlayerShip>>,
-    changed: Query<(), (With<PlayerShip>, Changed<Inventory>)>,
     mut commands: Commands,
     container: Query<Entity, With<SlotContainer>>,
     children: Query<&Children>,
 ) {
-    // Rebuild on an inventory change or a build-mode active-state edge (tracked here so
-    // selecting/rotating a module — other `BuildMode` mutations — doesn't rebuild).
-    let active_changed = build.active != *prev_active;
-    *prev_active = build.active;
-    if !active_changed && changed.is_empty() {
-        return;
-    }
+    let building = *state.get() == BuildState::Building;
     let Ok((ship, inventory)) = inventories.single() else {
         return;
     };
@@ -719,7 +729,7 @@ fn rebuild_inventory_ui(
     commands.entity(container).with_children(|list| {
         for (index, stack) in inventory.items.iter().enumerate() {
             // While building, show only the items usable there.
-            if build.active && !stack.kind.build_relevant() {
+            if building && !stack.kind.build_relevant() {
                 continue;
             }
             let swatch = item_swatch(stack, &registry, &theme);
@@ -772,16 +782,21 @@ fn rebuild_inventory_ui(
 
 /// Start dragging a module item out of the inventory. While in build mode, dragging a
 /// *module* slot selects that module and shows the build ghost (which then follows the
-/// cursor via build mode's own systems). Component items aren't placeable yet, so
-/// dragging them does nothing; outside build mode nothing happens either.
+/// cursor via build mode's own systems); a *turret* slot instead lights up the empty
+/// turret mounts it can drop onto. Component items aren't placeable yet, so dragging
+/// them does nothing; outside build mode nothing happens either.
 fn on_slot_drag_start(
     mut event: On<Pointer<DragStart>>,
+    state: Res<State<BuildState>>,
     slots: Query<&InventorySlot>,
     inventories: Query<&Inventory>,
     registry: Res<ModuleRegistry>,
     theme: Res<Theme>,
     mut build: ResMut<BuildMode>,
     mut focus: ResMut<StatFocus>,
+    mounts: Query<(Entity, &BuiltModule, &StructureRoot)>,
+    children: Query<&Children>,
+    turrets: Query<(), With<Turret>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -792,7 +807,7 @@ fn on_slot_drag_start(
     // Pointer events bubble up the UI tree, so this global observer would otherwise re-fire
     // for each ancestor (spawning duplicate chips); handle the slot once and stop here.
     event.propagate(false);
-    if !build.active {
+    if *state.get() != BuildState::Building {
         return;
     }
     let Ok(inventory) = inventories.get(slot.container) else {
@@ -806,7 +821,8 @@ fn on_slot_drag_start(
     }
     match stack.kind {
         // A module gets a placement ghost (snaps to attach points). A turret has no ghost —
-        // it's dropped onto an existing mount. Other items aren't placeable.
+        // it's dropped onto an existing mount, so mark the valid drop targets instead.
+        // Other items aren't placeable.
         ItemKind::Module(kind) => begin_module_drag(
             kind,
             &mut build,
@@ -815,7 +831,19 @@ fn on_slot_drag_start(
             &mut meshes,
             &mut materials,
         ),
-        ItemKind::Turret(..) => {}
+        ItemKind::Turret(..) => {
+            if let Some(structure) = build.structure() {
+                spawn_turret_mount_highlights(
+                    structure,
+                    &mounts,
+                    &children,
+                    &turrets,
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                );
+            }
+        }
         ItemKind::Component | ItemKind::Trade => return,
     }
     // Show this item's stats for the duration of the drag.
@@ -859,13 +887,38 @@ fn on_slot_drag(
     }
 }
 
-/// Commands + mesh/material assets bundled so the drag-end observer stays under Bevy's
-/// system-param count limit.
+/// Commands, assets and the placement-target queries bundled so the drag-end observer
+/// stays under Bevy's system-param count limit.
 #[derive(SystemParam)]
-struct SpawnCtx<'w, 's> {
+struct DropCtx<'w, 's> {
     commands: Commands<'w, 's>,
     meshes: ResMut<'w, Assets<Mesh>>,
     materials: ResMut<'w, Assets<ColorMaterial>>,
+    windows: Query<'w, 's, &'static Window>,
+    cameras: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<Camera2d>>,
+    points: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static mut AttachPoint,
+            &'static GlobalTransform,
+            &'static StructureRoot,
+        ),
+    >,
+    bodies: Query<'w, 's, &'static GlobalTransform>,
+    modules: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static BuiltModule,
+            &'static GlobalTransform,
+            &'static StructureRoot,
+        ),
+    >,
+    children: Query<'w, 's, &'static Children>,
+    turrets: Query<'w, 's, (), With<Turret>>,
 }
 
 /// Finish dragging an item: a **module** is placed at the cursor (`build::drop_module`,
@@ -874,31 +927,25 @@ struct SpawnCtx<'w, 's> {
 /// the stack; otherwise the drag is cancelled (nothing consumed).
 fn on_slot_drag_end(
     mut event: On<Pointer<DragEnd>>,
+    state: Res<State<BuildState>>,
     over_ui: Res<PointerOverUi>,
     slots: Query<&InventorySlot>,
-    chips: Query<Entity, With<DragChip>>,
+    cleanup: Query<Entity, Or<(With<DragChip>, With<TurretMountHighlight>)>>,
     mut inventories: Query<&mut Inventory>,
     registry: Res<ModuleRegistry>,
     mut build: ResMut<BuildMode>,
     mut focus: ResMut<StatFocus>,
-    windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    mut points: Query<(Entity, &mut AttachPoint, &GlobalTransform, &StructureRoot)>,
-    bodies: Query<&GlobalTransform>,
-    modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
-    children: Query<&Children>,
-    turrets: Query<(), With<Turret>>,
-    mut ctx: SpawnCtx,
+    mut ctx: DropCtx,
 ) {
-    // The drag is over: drop the cursor chip and the dragged-stat focus first, so they're
-    // cleaned up even if the slot entity was despawned mid-drag (otherwise the early-return
-    // below would leak a stuck chip / stat window). Guarded so a non-slot `DragEnd` doesn't
-    // spuriously mark `StatFocus` changed.
+    // The drag is over: drop the cursor chip, the mount highlights and the dragged-stat
+    // focus first, so they're cleaned up even if the slot entity was despawned mid-drag
+    // (otherwise the early-return below would leak a stuck chip / stat window). Guarded
+    // so a non-slot `DragEnd` doesn't spuriously mark `StatFocus` changed.
     if focus.dragged.is_some() {
         focus.dragged = None;
     }
-    for chip in &chips {
-        ctx.commands.entity(chip).despawn();
+    for entity in &cleanup {
+        ctx.commands.entity(entity).despawn();
     }
     let Ok(slot) = slots.get(event.entity) else {
         return;
@@ -907,7 +954,7 @@ fn on_slot_drag_end(
     // double-despawned the chip above.)
     event.propagate(false);
     let (container, index) = (slot.container, slot.index);
-    if !build.active {
+    if *state.get() != BuildState::Building {
         return;
     }
     let item_kind = inventories
@@ -922,11 +969,11 @@ fn on_slot_drag_end(
             over_ui.0,
             &mut build,
             &registry,
-            &windows,
-            &cameras,
-            &mut points,
-            &bodies,
-            &modules,
+            &ctx.windows,
+            &ctx.cameras,
+            &mut ctx.points,
+            &ctx.bodies,
+            &ctx.modules,
             &mut ctx.commands,
             &mut ctx.meshes,
             &mut ctx.materials,
@@ -936,11 +983,11 @@ fn on_slot_drag_end(
             kind,
             arc,
             &build,
-            &windows,
-            &cameras,
-            &modules,
-            &children,
-            &turrets,
+            &ctx.windows,
+            &ctx.cameras,
+            &ctx.modules,
+            &ctx.children,
+            &ctx.turrets,
             &mut ctx.commands,
             &mut ctx.meshes,
             &mut ctx.materials,
@@ -963,47 +1010,20 @@ fn on_slot_drag_end(
     }
 }
 
-/// While a turret item is being dragged in build mode, show a green overlay on every empty
-/// turret mount of the edited structure (the valid drop targets); clear them when the drag
-/// ends. Acts on the drag edge (a `Local<bool>`) so it spawns/despawns once per drag, not
-/// every frame.
-fn highlight_turret_mounts(
-    build: Res<BuildMode>,
-    focus: Res<StatFocus>,
-    inventories: Query<&Inventory>,
-    mut was_dragging: Local<bool>,
-    mounts: Query<(Entity, &BuiltModule, &StructureRoot)>,
-    children: Query<&Children>,
-    turrets: Query<(), With<Turret>>,
-    highlights: Query<Entity, With<TurretMountHighlight>>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+/// Overlay a green quad on every empty turret mount of `structure` — the valid drop
+/// targets for a dragged turret item. Spawned once by the drag-start observer and
+/// despawned on drag end (`on_slot_drag_end`) or when build mode exits mid-drag
+/// (`close_build_inventory`); no per-frame system involved.
+fn spawn_turret_mount_highlights(
+    structure: Entity,
+    mounts: &Query<(Entity, &BuiltModule, &StructureRoot)>,
+    children: &Query<&Children>,
+    turrets: &Query<(), With<Turret>>,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
-    let dragging_turret = build.active
-        && focus
-            .dragged
-            .and_then(|(container, index)| {
-                inventories
-                    .get(container)
-                    .ok()
-                    .and_then(|inv| inv.items.get(index))
-            })
-            .is_some_and(|stack| matches!(stack.kind, ItemKind::Turret(..)));
-    if dragging_turret == *was_dragging {
-        return;
-    }
-    *was_dragging = dragging_turret;
-    if !dragging_turret {
-        for highlight in &highlights {
-            commands.entity(highlight).despawn();
-        }
-        return;
-    }
-    let Some(structure) = build.structure() else {
-        return;
-    };
-    for (entity, module, root) in &mounts {
+    for (entity, module, root) in mounts {
         if module.kind != ModuleKind::Turret || root.0 != structure {
             continue;
         }
@@ -1044,9 +1064,10 @@ fn hover_built_module(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    // Inspect only while building, with nothing being placed/dragged and the cursor over the
-    // world (not the inventory UI).
-    let inspecting = build.active && !build.is_placing() && focus.dragged.is_none() && !over_ui.0;
+    // Inspect only with nothing being placed/dragged and the cursor over the world (not
+    // the inventory UI). The system itself is gated to build mode (`in_state(Building)`);
+    // `close_build_inventory` clears the focus/highlight on exit.
+    let inspecting = !build.is_placing() && focus.dragged.is_none() && !over_ui.0;
     let hit = if inspecting {
         build.structure().and_then(|structure| {
             cursor_world(&windows, &cameras)

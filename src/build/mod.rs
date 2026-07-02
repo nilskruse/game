@@ -12,7 +12,7 @@ pub use attach::{build_buildable_side, AttachSlot};
 pub(crate) use blueprint::{build_structure, dump_blueprints, extract_blueprint, Blueprint};
 pub(crate) use kinds::ModuleKind;
 pub(crate) use mode::{begin_module_drag, drop_module, install_turret, ModuleDeconstructed};
-pub use mode::{spawn_build_console, BuildMode};
+pub use mode::{spawn_build_console, BuildMode, BuildState};
 pub(crate) use registry::ModuleDef;
 pub use registry::ModuleRegistry;
 pub(crate) use spawn::{mount, BuiltModule, Mounted};
@@ -46,8 +46,13 @@ impl Plugin for BuildPlugin {
         // The module content registry, available to `Startup` spawners (ship/station/
         // enemy) and the load path.
         app.init_resource::<ModuleRegistry>();
+        app.init_state::<BuildState>();
         app.init_resource::<BuildMode>()
             .add_systems(Startup, (mode::spawn_build_ui, mode::spawn_com_marker))
+            // Transition work lives on the state edges; the per-frame build systems
+            // only run while building.
+            .add_systems(OnEnter(BuildState::Building), mode::on_enter_build)
+            .add_systems(OnExit(BuildState::Building), mode::on_exit_build)
             .add_systems(
                 Update,
                 (
@@ -59,9 +64,14 @@ impl Plugin for BuildPlugin {
                     mode::place_module,
                     mode::deconstruct_module,
                     mode::update_build_text,
-                    mode::update_com_marker,
-                    spawn::update_airlock_doors,
-                ),
+                )
+                    .run_if(in_state(BuildState::Building)),
+            )
+            // These self-gate (the marker keys off `BuildMode::structure`; airlocks
+            // are a docking concern), so they run in every state.
+            .add_systems(
+                Update,
+                (mode::update_com_marker, spawn::update_airlock_doors),
             );
     }
 }

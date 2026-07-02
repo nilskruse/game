@@ -33,12 +33,23 @@ fn snap_query(cursor: Vec2, facing: Vec2, depth_units: u32, cam_rot: Quat) -> Ve
     cursor - world_facing * (depth_units as f32 * UNIT / 2.)
 }
 
+/// Whether the player is at an engineering console building. A real Bevy `State`:
+/// the per-frame build systems are gated on `in_state(Building)`, the transition
+/// work (open/close the build UI, clear selection/overlays) lives in `OnEnter`/
+/// `OnExit` systems, and other features (inventory window, walk input, player
+/// weapons) hook the same state instead of polling a flag.
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum BuildState {
+    #[default]
+    Idle,
+    Building,
+}
+
 #[derive(Resource)]
 pub struct BuildMode {
-    pub active: bool,
     /// The structure (ship/station root) currently being edited. Set when entering
     /// build mode via an engineering console; only this structure's attach points
-    /// are active. `None` when not building.
+    /// are active. `None` when not building (cleared in [`on_exit_build`]).
     structure: Option<Entity>,
     selected: Option<ModuleKind>,
     /// Body-local outward direction for the *free-floating* ghost (when nothing snaps),
@@ -53,7 +64,6 @@ pub struct BuildMode {
 impl Default for BuildMode {
     fn default() -> Self {
         Self {
-            active: false,
             structure: None,
             selected: None,
             facing: Vec2::Y,
@@ -115,24 +125,23 @@ pub fn spawn_build_console(
 }
 
 /// Observer: toggle build mode for the console's structure when interacted with —
-/// E opens it, E again leaves (as do B and Esc, see [`exit_build_mode`]).
+/// F opens it, F again leaves (as do B and Esc, see [`exit_build_mode`]).
 fn enter_build_mode(
     event: On<Interacted>,
     consoles: Query<&BuildConsole>,
+    state: Res<State<BuildState>>,
+    mut next: ResMut<NextState<BuildState>>,
     mut build: ResMut<BuildMode>,
-    mut commands: Commands,
 ) {
     let Ok(console) = consoles.get(event.0) else {
         return;
     };
-    if build.active && build.structure == Some(console.structure) {
-        // Already building this structure — leave.
-        build.active = false;
-        build.structure = None;
-        clear_selection(&mut build, &mut commands);
+    if *state.get() == BuildState::Building && build.structure == Some(console.structure) {
+        // Already building this structure — leave (cleanup runs in `on_exit_build`).
+        next.set(BuildState::Idle);
     } else {
-        build.active = true;
         build.structure = Some(console.structure);
+        next.set(BuildState::Building);
     }
 }
 
@@ -257,20 +266,42 @@ pub(crate) fn update_com_marker(
     }
 }
 
-/// Exit build mode with `B` or `Escape`. Entering build mode is done by interacting
-/// (E) with an engineering console — see [`spawn_build_console`].
+/// Exit build mode with `B` or `Escape` (runs only while building; the teardown
+/// itself happens in [`on_exit_build`]). Entering build mode is done by interacting
+/// (F) with an engineering console — see [`spawn_build_console`].
 pub(crate) fn exit_build_mode(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mut next: ResMut<NextState<BuildState>>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyB) || keyboard.just_pressed(KeyCode::Escape) {
+        next.set(BuildState::Idle);
+    }
+}
+
+/// `OnEnter(Building)`: show the build-hint panel. (The inventory window opens itself
+/// on the same transition — see `inventory`.)
+pub(crate) fn on_enter_build(mut panels: Query<&mut Visibility, With<BuildPanel>>) {
+    for mut visibility in &mut panels {
+        *visibility = Visibility::Visible;
+    }
+}
+
+/// `OnExit(Building)`: tear down build mode — drop the selection and its ghost,
+/// forget the edited structure (the camera and CoM marker key off it), and hide the
+/// hint panel and every attach-point marker.
+pub(crate) fn on_exit_build(
     mut build: ResMut<BuildMode>,
     mut commands: Commands,
+    mut panels: Query<&mut Visibility, (With<BuildPanel>, Without<AttachPoint>)>,
+    mut points: Query<&mut Visibility, With<AttachPoint>>,
 ) {
-    if !build.active {
-        return;
+    build.structure = None;
+    clear_selection(&mut build, &mut commands);
+    for mut visibility in &mut panels {
+        *visibility = Visibility::Hidden;
     }
-    if keyboard.just_pressed(KeyCode::KeyB) || keyboard.just_pressed(KeyCode::Escape) {
-        build.active = false;
-        build.structure = None;
-        clear_selection(&mut build, &mut commands);
+    for mut visibility in &mut points {
+        *visibility = Visibility::Hidden;
     }
 }
 
@@ -282,9 +313,6 @@ pub(crate) fn select_module(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    if !build.active {
-        return;
-    }
     let kind = if keyboard.just_pressed(KeyCode::Digit1) {
         ModuleKind::Cargo
     } else if keyboard.just_pressed(KeyCode::Digit2) {
@@ -338,7 +366,7 @@ pub(crate) fn begin_module_drag(
 /// ghost's shape doesn't change — `update_ghost` re-points it — and the module
 /// attaches only to a side it faces, so this chooses which way it extends.
 pub(crate) fn rotate_module(keyboard: Res<ButtonInput<KeyCode>>, mut build: ResMut<BuildMode>) {
-    if !build.active || build.selected.is_none() || !keyboard.just_pressed(KeyCode::KeyR) {
+    if build.selected.is_none() || !keyboard.just_pressed(KeyCode::KeyR) {
         return;
     }
     // Rotate the facing 90° clockwise: (x, y) -> (y, -x).
@@ -415,9 +443,6 @@ pub(crate) fn update_ghost(
     modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     mut ghosts: Query<&mut Transform, With<Ghost>>,
 ) {
-    if !build.active {
-        return;
-    }
     let Some(footprint) = build.footprint(&registry) else {
         return;
     };
@@ -626,14 +651,8 @@ pub(crate) fn highlight_attach_points(
     modules: Query<(Entity, &BuiltModule, &GlobalTransform, &StructureRoot)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    if !build.active {
-        for (_, _, _, _, _, _, mut vis) in &mut points {
-            *vis = Visibility::Hidden;
-        }
-        return;
-    }
-
-    // Only the structure being edited contributes attach points.
+    // Only the structure being edited contributes attach points. (Gated to build mode;
+    // `on_exit_build` hides every point when leaving.)
     let (inv, footprints) = structure_blocking(build.structure, &bodies, &modules);
     let blocked =
         |world: Vec2, dir: Vec2| inv.is_some_and(|i| cell_blocked(world, dir, i, &footprints));
@@ -874,7 +893,7 @@ pub(crate) fn place_module(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    if !build.active || over_ui.0 || !mouse.just_pressed(MouseButton::Left) {
+    if over_ui.0 || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
     let Some(cursor) = cursor_world(&windows, &cameras) else {
@@ -1010,11 +1029,7 @@ pub(crate) fn deconstruct_module(
     players: Query<Entity, With<crate::ship::PlayerShip>>,
     mut points: Query<&mut AttachPoint>,
 ) {
-    if !build.active
-        || over_ui.0
-        || build.selected.is_some()
-        || !mouse.just_pressed(MouseButton::Left)
-    {
+    if over_ui.0 || build.selected.is_some() || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
     let Some(cursor) = cursor_world(&windows, &cameras) else {
@@ -1074,33 +1089,23 @@ pub(crate) fn update_build_text(
     build: Res<BuildMode>,
     registry: Res<ModuleRegistry>,
     mut text: Query<&mut Text, With<BuildText>>,
-    mut panel: Query<&mut Visibility, With<BuildPanel>>,
 ) {
-    // The hint only changes when build mode does (toggled, module/turret/arc/facing). Skip
-    // rebuilding the string (and forcing a text re-layout) on every other frame.
+    // The hint only changes when build mode does (entered, module selected/placed). Skip
+    // rebuilding the string (and forcing a text re-layout) on every other frame. Entering
+    // build mode sets `structure`, so the first gated run refreshes the text; the panel
+    // itself is shown/hidden by `on_enter_build`/`on_exit_build`.
     if !build.is_changed() {
         return;
-    }
-    if let Ok(mut vis) = panel.single_mut() {
-        *vis = if build.active {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
     }
     let Ok(mut text) = text.single_mut() else {
         return;
     };
-    let content = if !build.active {
-        String::new()
-    } else {
-        match build.selected {
-            None => "BUILD MODE - select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway  [7] Cockpit  [8] Thruster   |  click a module to remove, or drag a turret onto a turret mount   ([B]/[Esc] exit)".to_string(),
-            Some(kind) => format!(
-                "BUILD MODE - placing {} - click a highlighted attach point   ([R] rotate, [B]/[Esc] exit)",
-                registry.module(kind).name
-            ),
-        }
+    let content = match build.selected {
+        None => "BUILD MODE - select: [1] Cargo  [2] Engine  [3] Sensor  [4] Turret  [5] Dock  [6] Hallway  [7] Cockpit  [8] Thruster   |  click a module to remove, or drag a turret onto a turret mount   ([B]/[Esc] exit)".to_string(),
+        Some(kind) => format!(
+            "BUILD MODE - placing {} - click a highlighted attach point   ([R] rotate, [B]/[Esc] exit)",
+            registry.module(kind).name
+        ),
     };
     *text = Text::new(content);
 }

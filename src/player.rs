@@ -152,11 +152,12 @@ pub fn spawn_player(
 /// neither can one in build mode (working at the engineering console).
 pub fn read_player_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    build: Res<crate::build::BuildMode>,
+    build_state: Res<State<crate::build::BuildState>>,
     mut query: Query<(&mut MoveInput, Option<&Seated>), With<Player>>,
 ) {
+    let building = *build_state.get() == crate::build::BuildState::Building;
     for (mut input, seated) in query.iter_mut() {
-        if seated.is_some() || build.active {
+        if seated.is_some() || building {
             input.0 = Vec2::ZERO;
             continue;
         }

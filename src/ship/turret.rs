@@ -7,7 +7,7 @@ use bevy::{
 };
 
 use crate::{
-    build::{BuildMode, BuiltModule},
+    build::{BuildState, BuiltModule},
     effects::{spawn_hit_spark, Hit, Lifetime},
     faction::{Faction, InFaction},
     health::ModuleDisabled,
@@ -437,7 +437,7 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 pub(crate) fn player_weapons(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
-    build: Res<BuildMode>,
+    build_state: Res<State<BuildState>>,
     over_ui: Res<crate::ui::PointerOverUi>,
     pilots: Query<&Seated>,
     windows: Query<&Window>,
@@ -459,7 +459,7 @@ pub(crate) fn player_weapons(
 ) {
     // Only the piloted ship's guns, and not while building (left-click builds then),
     // and not when the click landed on the UI.
-    if build.active || over_ui.0 {
+    if *build_state.get() == BuildState::Building || over_ui.0 {
         return;
     }
     let Some(seated) = pilots.iter().next() else {
