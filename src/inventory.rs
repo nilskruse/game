@@ -15,12 +15,14 @@ use bevy::ecs::system::SystemParam;
 use bevy::picking::events::{Click, Drag, DragEnd, DragStart, Out, Over, Pointer};
 use bevy::picking::Pickable;
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::build::{
     begin_module_drag, drop_module, install_turret, AttachPoint, BuildMode, BuiltModule,
     ModuleDeconstructed, ModuleDef, ModuleKind, ModuleRegistry,
 };
 use crate::health::{ModuleDisabled, ModuleHealth};
+use crate::save::{InstanceId, PersistSet, SaveFile};
 use crate::ship::turret::{FireArc, Turret, TurretKind};
 use crate::ship::{PlayerShip, ShipBase, StructureRoot};
 use crate::station::SpaceStation;
@@ -31,6 +33,7 @@ pub struct InventoryPlugin;
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StatFocus>()
+            .init_resource::<PendingInventories>()
             .add_systems(Startup, spawn_inventory_ui)
             // Attach an inventory the moment a structure root appears, rather than polling
             // every frame.
@@ -48,13 +51,23 @@ impl Plugin for InventoryPlugin {
             .add_systems(
                 Update,
                 (
-                    seed_player_inventory,
+                    // Seed before applying saved items, so a loaded inventory always
+                    // overwrites the starter set (see `apply_pending_inventories`).
+                    (seed_player_inventory, apply_pending_inventories).chain(),
                     toggle_inventory_hotkey,
                     sync_inventory_to_build_mode,
                     rebuild_inventory_ui,
                     hover_built_module,
                     update_stat_window,
                     highlight_turret_mounts,
+                ),
+            )
+            // Persistence: inventories own their save chunk (see `save.rs`).
+            .add_systems(
+                Update,
+                (
+                    capture_inventories.in_set(PersistSet::Capture),
+                    apply_inventories.in_set(PersistSet::Apply),
                 ),
             );
     }
@@ -67,7 +80,7 @@ impl Plugin for InventoryPlugin {
 /// What an inventory item *is*. Modules can be placed onto the ship in build mode (the
 /// planned drag-and-drop); components are generic build materials for now. Later this is
 /// the place an `ItemDef`/item-registry id would live (same pattern as `ModuleRegistry`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) enum ItemKind {
     /// A buildable ship module, identified by its [`ModuleKind`]. Build-relevant.
     Module(ModuleKind),
@@ -281,7 +294,7 @@ impl StatFocus {
 /// is *derived* from the kind (registry name / [`turret_item_name`]) — never hand-write
 /// it, or otherwise-identical stacks stop merging. Component/Trade placeholders carry
 /// bespoke names until a real item registry exists.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ItemStack {
     pub kind: ItemKind,
     pub name: String,
@@ -307,7 +320,9 @@ fn attach_inventory<C: Component>(add: On<Add, C>, mut commands: Commands) {
 /// Fill the player ship's inventory with a starter set the moment it first gets one
 /// (initial spawn, and again after a load / new game rebuilds the ship). Demo content
 /// until cargo modules and real item acquisition exist. Module names come from the
-/// registry so they track `module_defs()`.
+/// registry so they track `module_defs()`. On a load this runs *before*
+/// [`apply_pending_inventories`] (chained in the plugin), which overwrites the seed
+/// with the saved items — so the seed only survives for genuinely new ships.
 fn seed_player_inventory(
     mut ships: Query<&mut Inventory, (Added<Inventory>, With<PlayerShip>)>,
     registry: Res<ModuleRegistry>,
@@ -411,6 +426,66 @@ fn same_item(a: ItemKind, b: ItemKind) -> bool {
         (ItemKind::Trade, ItemKind::Trade) => true,
         _ => false,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Persistence (the "inventories" save chunk)
+// ---------------------------------------------------------------------------
+
+/// The inventories chunk: every structure's items, keyed by its `InstanceId` (the
+/// stable cross-save id — a live `Entity` wouldn't survive the load rebuild).
+#[derive(Serialize, Deserialize, Default)]
+struct InventoriesSave {
+    inventories: Vec<(u64, Vec<ItemStack>)>,
+}
+
+/// Saved inventories waiting to be applied. Load rebuilds structures via deferred
+/// commands, so the chunk can't be applied to them directly in `PersistSet::Apply`;
+/// [`apply_pending_inventories`] retries matching by `InstanceId` each frame until
+/// every entry lands (the `PendingPilot` pattern from `player.rs`).
+#[derive(Resource, Default)]
+pub(crate) struct PendingInventories(pub(crate) Vec<(u64, Vec<ItemStack>)>);
+
+/// Capture every structure's inventory into the chunk (runs in `PersistSet::Capture`).
+fn capture_inventories(
+    structures: Query<(&InstanceId, &Inventory)>,
+    mut file: ResMut<SaveFile>,
+) {
+    let inventories = structures
+        .iter()
+        .map(|(id, inventory)| (id.0, inventory.items.clone()))
+        .collect();
+    file.write("inventories", &InventoriesSave { inventories });
+}
+
+/// Read the inventories chunk into [`PendingInventories`] (runs in `PersistSet::Apply`).
+/// A save without the chunk simply leaves nothing pending (the seed stands).
+fn apply_inventories(file: Res<SaveFile>, mut pending: ResMut<PendingInventories>) {
+    pending.0 = file
+        .read::<InventoriesSave>("inventories")
+        .map(|chunk| chunk.inventories)
+        .unwrap_or_default();
+}
+
+/// Apply pending saved inventories to structures as they (re)appear, matched by
+/// `InstanceId`. Overwrites whatever the structure spawned with — including the player
+/// ship's starter seed, which is why this is chained after `seed_player_inventory`.
+fn apply_pending_inventories(
+    mut pending: ResMut<PendingInventories>,
+    mut structures: Query<(&InstanceId, &mut Inventory)>,
+) {
+    if pending.0.is_empty() {
+        return;
+    }
+    pending.0.retain(|(want, items)| {
+        for (id, mut inventory) in structures.iter_mut() {
+            if id.0 == *want {
+                inventory.items = items.clone();
+                return false; // applied — drop the entry
+            }
+        }
+        true // structure not rebuilt yet — retry next frame
+    });
 }
 
 // ---------------------------------------------------------------------------

@@ -279,6 +279,7 @@ pub(crate) struct WorldEdit<'w, 's> {
     zoom: ResMut<'w, CameraZoom>,
     camera_snap: ResMut<'w, crate::camera::CameraSnap>,
     pending_pilot: ResMut<'w, crate::player::PendingPilot>,
+    pending_inventories: ResMut<'w, crate::inventory::PendingInventories>,
     roots: Query<'w, 's, Entity, With<Origin>>,
     player: Query<'w, 's, (Entity, &'static mut Position), With<Player>>,
 }
@@ -406,6 +407,9 @@ fn new_game(edit: &mut WorldEdit) {
         edit.commands.entity(entity).remove::<Seated>();
     }
     edit.pending_pilot.0 = None;
+    // Fresh structures reuse instance ids from 1, so a stale pending list from an
+    // earlier load must not apply to them.
+    edit.pending_inventories.0.clear();
     edit.zoom.0 = 1.0;
     edit.camera_snap.0 = true;
     info!("started a new game");
